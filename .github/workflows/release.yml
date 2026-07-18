@@ -122,13 +122,16 @@ jobs:
       # CUDA 13.2 is the first release whose cudafe++ survives the VS 2026
       # (MSVC 14.5x) headers on windows-latest. It also dropped pre-Turing
       # GPU targets, so pin CUDAARCHS instead of ggml's default arch list.
+      # Full local installer: the 13.x network installer's selective
+      # sub-packages ship without include/crt (host_config.h), which breaks
+      # every nvcc compile.
       - name: CUDA toolkit (Windows)
         if: contains(matrix.preset, 'cuda') && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: 13.2.0
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          method: local
+          use-github-cache: false
 
       # CMake's MSBuild generator finds nvcc through the CUDA VS integration
       # files, which the network installer drops next to the toolkit but does
