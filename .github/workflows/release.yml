@@ -147,7 +147,8 @@ jobs:
             Copy-Item "$env:CUDA_PATH\extras\visual_studio_integration\MSBuildExtensions\*" "$($_.FullName)\BuildCustomizations" -Force
           }
           "NVCC_APPEND_FLAGS=-allow-unsupported-compiler" >> $env:GITHUB_ENV
-          "CUDAARCHS=75;80;86;89;90;120" >> $env:GITHUB_ENV
+          "CUDAARCHS=75-virtual;86-real;89-real;120-real" >> $env:GITHUB_ENV
+          "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
 
       # ggml's Metal backend uses @available checks, which need compiler-rt;
       # rustc links with -nodefaultlibs, so pull in clang_rt.osx explicitly.
