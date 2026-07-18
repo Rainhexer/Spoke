@@ -112,16 +112,21 @@ jobs:
       # exist in the Windows installer.
       - name: CUDA toolkit (Linux)
         if: contains(matrix.preset, 'cuda') && runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
+          cuda: 12.6.2
           method: network
           sub-packages: '["nvcc", "cudart"]'
           non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
 
+      # CUDA 13.2 is the first release whose cudafe++ survives the VS 2026
+      # (MSVC 14.5x) headers on windows-latest. It also dropped pre-Turing
+      # GPU targets, so pin CUDAARCHS instead of ggml's default arch list.
       - name: CUDA toolkit (Windows)
         if: contains(matrix.preset, 'cuda') && runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
+          cuda: 13.2.0
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
 
@@ -139,19 +144,35 @@ jobs:
             Copy-Item "$env:CUDA_PATH\extras\visual_studio_integration\MSBuildExtensions\*" "$($_.FullName)\BuildCustomizations" -Force
           }
           "NVCC_APPEND_FLAGS=-allow-unsupported-compiler" >> $env:GITHUB_ENV
+          "CUDAARCHS=75;80;86;89;90;120" >> $env:GITHUB_ENV
 
+      # ggml's Metal backend uses @available checks, which need compiler-rt;
+      # rustc links with -nodefaultlibs, so pull in clang_rt.osx explicitly.
+      - name: Clang runtime for Metal backend (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          RT_DIR="$(clang --print-resource-dir)/lib/darwin"
+          echo "RUSTFLAGS=-C link-arg=-L$RT_DIR -C link-arg=-lclang_rt.osx" >> "$GITHUB_ENV"
+
+      # Short target dir: MSBuild's FileTracker hits MAX_PATH inside the
+      # deeply nested vulkan-shaders-gen ExternalProject otherwise (FTK1011).
       - name: libclang for bindgen (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=C:/st" >> "$GITHUB_ENV"
 
+      # linux-cuda skips the AppImage: linuxdeploy chokes trying to resolve
+      # the CUDA runtime libraries, and bundling them would be enormous
+      # anyway — deb/rpm users get CUDA from their distro.
       - name: Build (complete)
         if: matrix.variant == 'complete'
-        run: tauri build --features ${{ matrix.preset }}
+        run: tauri build --features ${{ matrix.preset }} ${{ matrix.preset == 'platform-linux-cuda' && '--bundles deb,rpm' || '' }}
 
       - name: Build (tray-only)
         if: matrix.variant == 'tray'
-        run: tauri build --features ${{ matrix.preset }},tray-only
+        run: tauri build --features ${{ matrix.preset }},tray-only ${{ matrix.preset == 'platform-linux-cuda' && '--bundles deb,rpm' || '' }}
 
       # Bundle filenames only encode version + arch; add the preset (and tray
       # tag) so uploads from parallel jobs never overwrite each other.
@@ -161,7 +182,7 @@ jobs:
           mkdir -p dist
           tag="${{ matrix.label }}"
           if [ "${{ matrix.variant }}" = "tray" ]; then tag="$tag-tray"; fi
-          find src-tauri/target/release/bundle \
+          find "${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle" \
               -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
                          -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) \
               -not -path '*unpacked*' | while read -r f; do
