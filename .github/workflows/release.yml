@@ -146,7 +146,7 @@ jobs:
           Get-ChildItem "$vs\MSBuild\Microsoft\VC" -Directory | ForEach-Object {
             Copy-Item "$env:CUDA_PATH\extras\visual_studio_integration\MSBuildExtensions\*" "$($_.FullName)\BuildCustomizations" -Force
           }
-          "NVCC_APPEND_FLAGS=-allow-unsupported-compiler" >> $env:GITHUB_ENV
+          "NVCC_APPEND_FLAGS=-allow-unsupported-compiler -Xcompiler /MT" >> $env:GITHUB_ENV
           "CUDAARCHS=75-virtual;86-real;89-real;120-real" >> $env:GITHUB_ENV
           "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
 
