@@ -22,6 +22,12 @@
 
 Prefer tap-to-start / tap-to-stop? Switch to **Toggle** mode. Prefer the text on your clipboard? Turn on **Copy to clipboard**.
 
+## Get Spoke
+
+Pre-built binaries are available on the [Releases page](https://github.com/FlyvendeMus/Spoke/releases).
+
+To build from source, see [BUILD.md](BUILD.md). It takes one command per platform once the toolchain is installed — the build produces a normal installer (`.dmg`, `.deb`, `.rpm`, `.AppImage`, `.msi`, or `.exe`). Speech models are downloaded in-app.
+
 ## In action
 
 <table>
@@ -80,12 +86,6 @@ Spoke uses whatever your hardware is best at. Each build is made for one platfor
 | Windows | NVIDIA GPU (CUDA), any GPU (Vulkan), or CPU |
 
 The engine bubble shows which one is active. Change it anytime — no reinstall, no restart.
-
-## Get Spoke
-
-Pre-built binaries are available on the [Releases page](https://github.com/FlyvendeMus/Spoke/releases).
-
-To build from source, see [BUILD.md](BUILD.md). It takes one command per platform once the toolchain is installed — the build produces a normal installer (`.dmg`, `.deb`, `.rpm`, `.AppImage`, `.msi`, or `.exe`). Speech models are downloaded in-app.
 
 ## First run
 
