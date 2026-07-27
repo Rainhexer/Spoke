@@ -124,17 +124,15 @@ fn prewarm_engine(app: &AppHandle, state: &Arc<SpokeState>) {
         let app = app.clone();
         let state = Arc::clone(state);
         tauri::async_runtime::spawn(async move {
-            emit_state(&app, "processing", None);
             let build = {
                 let state = Arc::clone(&state);
                 tokio::task::spawn_blocking(move || state.engine(&cfg).map(|_| ())).await
             };
             match build {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => emit_state(&app, "error", Some(format!("engine init: {e}"))),
-                Err(e) => emit_state(&app, "error", Some(format!("engine init panicked: {e}"))),
+                Ok(Err(e)) => emit_state(&app, "error", Some(format!("engine prewarm: {e}"))),
+                Err(e) => emit_state(&app, "error", Some(format!("engine prewarm panicked: {e}"))),
             }
-            emit_state(&app, "idle", None);
         });
     }
     #[cfg(not(feature = "whisper"))]
@@ -408,7 +406,7 @@ fn delete_model(app: AppHandle, model: String) -> Result<(), String> {
 /// Download a model, emitting progress/complete events and a desktop
 /// notification on success or failure. The streaming/atomic-rename work lives in
 /// `download_model_inner`; this wrapper only adds the terminal notification so
-/// both the bubble and headless tray builds report status the same way.
+/// downloads report status even when the bubble is hidden in the tray.
 #[cfg(feature = "whisper")]
 #[tauri::command]
 async fn download_model(app: AppHandle, model: String) -> Result<(), String> {
