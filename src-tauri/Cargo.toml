@@ -1,6 +1,6 @@
 [package]
 name = "spoke"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cross-platform voice-to-text dictation for the desktop"
 authors = ["Spoke"]
 edition = "2021"

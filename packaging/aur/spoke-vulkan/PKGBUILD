@@ -5,7 +5,7 @@
 # build ggml's Vulkan shaders.
 
 pkgname=spoke-vulkan
-pkgver=0.1
+pkgver=0.2
 pkgrel=1
 pkgdesc="Push-to-talk voice dictation (whisper.cpp, Vulkan GPU acceleration)"
 arch=('x86_64')

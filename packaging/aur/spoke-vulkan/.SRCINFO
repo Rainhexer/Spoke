@@ -1,6 +1,6 @@
 pkgbase = spoke-vulkan
 	pkgdesc = Push-to-talk voice dictation (whisper.cpp, Vulkan GPU acceleration)
-	pkgver = 0.1
+	pkgver = 0.2
 	pkgrel = 1
 	url = https://github.com/FlyvendeMus/Spoke
 	arch = x86_64
@@ -17,12 +17,14 @@ pkgbase = spoke-vulkan
 	depends = openssl
 	depends = alsa-lib
 	depends = xdotool
+	depends = gst-plugins-base
+	depends = gst-plugins-good
 	depends = vulkan-icd-loader
 	provides = spoke
 	conflicts = spoke
 	conflicts = spoke-cpu
 	conflicts = spoke-cuda
-	source = spoke-vulkan-0.1.tar.gz::https://github.com/FlyvendeMus/Spoke/archive/refs/tags/v0.1.tar.gz
+	source = spoke-vulkan-0.2.tar.gz::https://github.com/FlyvendeMus/Spoke/archive/refs/tags/v0.2.tar.gz
 	sha256sums = a0be6c1e05b783473e9981ce18d6e21ee7263e7067a9ddb37792d20a09f1a5af
 
 pkgname = spoke-vulkan
