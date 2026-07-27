@@ -78,6 +78,12 @@ impl WhisperStt {
     pub fn transcribe(&self, mono: &[f32], sample_rate: u32, language: &str) -> Result<String> {
         let audio = audio::resample_mono(mono, sample_rate, WHISPER_RATE);
         let mut audio = audio::strip_internal_silence(&audio, WHISPER_RATE);
+        // Nothing but silence survived: running inference on it only invites a
+        // hallucinated segment, so answer with no transcript instead.
+        if audio.is_empty() {
+            eprintln!("[spoke] no speech detected in recording — skipping inference");
+            return Ok(String::new());
+        }
         // Whisper's decoder truncates the last segment when audio ends mid-speech.
         // Appending 500 ms of silence gives it room to finalize the last tokens.
         let pad = WHISPER_RATE as usize / 2;

@@ -314,6 +314,48 @@ pub fn resample_mono(mono: &[f32], from_rate: u32, target_rate: u32) -> Vec<f32>
     out
 }
 
+/// Scale quiet recordings up to a usable level before transcription.
+///
+/// Many built-in mics (and any mic with the OS input slider turned down) deliver
+/// speech peaking around -30 dBFS. Whisper's no-speech detector treats audio
+/// that quiet as silence and returns `[BLANK_AUDIO]` for a perfectly good
+/// recording, so the level is normalized here instead of trusting the device.
+///
+/// The reference level is the 99th-percentile magnitude rather than the raw
+/// peak, so one click or pop can't suppress the gain the rest of the take needs.
+/// Gain is only applied when the recording is loud enough to plausibly contain
+/// speech (`MIN_REFERENCE`); below that it is room tone, and amplifying it just
+/// feeds the model noise to hallucinate on. Gain is never below 1.0 — already
+/// loud audio is returned untouched.
+pub fn normalize_gain(mono: &[f32]) -> Vec<f32> {
+    /// Level the 99th percentile is raised to. Leaves headroom so the few
+    /// samples above the percentile don't clip hard.
+    const TARGET: f32 = 0.5;
+    /// Below this the recording is noise, not quiet speech — leave it alone.
+    const MIN_REFERENCE: f32 = 0.003;
+    /// Ceiling on amplification, so a near-silent take isn't blown up into
+    /// full-scale hiss.
+    const MAX_GAIN: f32 = 15.0;
+
+    if mono.is_empty() {
+        return Vec::new();
+    }
+
+    let mut mags: Vec<f32> = mono.iter().map(|s| s.abs()).collect();
+    let idx = ((mags.len() as f32 * 0.99) as usize).min(mags.len() - 1);
+    mags.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    let reference = mags[idx];
+
+    if reference < MIN_REFERENCE {
+        return mono.to_vec();
+    }
+    let gain = (TARGET / reference).clamp(1.0, MAX_GAIN);
+    if gain <= 1.0 {
+        return mono.to_vec();
+    }
+    mono.iter().map(|s| (s * gain).clamp(-1.0, 1.0)).collect()
+}
+
 /// Strip leading silence from mono audio to reduce STT hallucinations.
 ///
 /// Algorithm:
@@ -471,6 +513,44 @@ mod tests {
         assert_eq!(i16::from_le_bytes([bytes[0], bytes[1]]), i16::MAX);
         assert_eq!(i16::from_le_bytes([bytes[2], bytes[3]]), -i16::MAX);
         assert_eq!(i16::from_le_bytes([bytes[4], bytes[5]]), 0);
+    }
+
+    #[test]
+    fn normalize_lifts_quiet_speech_above_silence_threshold() {
+        // A take peaking at ~0.04 — the level a low-gain built-in mic produces,
+        // which whisper otherwise reports as [BLANK_AUDIO].
+        let quiet: Vec<f32> = (0..16_000)
+            .map(|i| (i as f32 / 20.0).sin() * 0.04)
+            .collect();
+        let out = normalize_gain(&quiet);
+        let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.4, "peak {peak} not lifted");
+        // And the lifted audio now survives silence stripping.
+        assert!(!strip_internal_silence(&out, 16_000).is_empty());
+    }
+
+    #[test]
+    fn normalize_leaves_loud_audio_untouched() {
+        let loud: Vec<f32> = (0..16_000).map(|i| (i as f32 / 20.0).sin() * 0.9).collect();
+        assert_eq!(normalize_gain(&loud), loud);
+    }
+
+    #[test]
+    fn normalize_does_not_amplify_room_tone() {
+        let noise: Vec<f32> = (0..16_000)
+            .map(|i| (i as f32 / 7.0).sin() * 0.001)
+            .collect();
+        assert_eq!(normalize_gain(&noise), noise);
+    }
+
+    #[test]
+    fn normalize_ignores_isolated_click() {
+        // One full-scale sample must not stop the rest of the take being lifted.
+        let mut audio: Vec<f32> = (0..16_000).map(|i| (i as f32 / 20.0).sin() * 0.04).collect();
+        audio[0] = 1.0;
+        let out = normalize_gain(&audio);
+        let lifted = out[100..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(lifted > 0.4, "click suppressed gain (peak {lifted})");
     }
 
     #[test]

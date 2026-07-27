@@ -673,6 +673,10 @@ async fn run_pipeline(app: &AppHandle, state: &Arc<SpokeState>, session: u64) ->
             "No audio captured – check microphone permissions and device selection"
         ));
     }
+    // Low-gain mics (built-in mics, or any device with the OS input slider
+    // turned down) peak around -30 dBFS, which whisper classifies as silence and
+    // answers with [BLANK_AUDIO]. Level the audio before it reaches any engine.
+    let mono = audio::normalize_gain(&mono);
 
     let sample_rate = rec.sample_rate;
 
@@ -706,7 +710,9 @@ async fn run_pipeline(app: &AppHandle, state: &Arc<SpokeState>, session: u64) ->
         .transcribe(mono, sample_rate, cfg.general.language.clone())
         .await?;
 
-    let transcript = transcript.trim().to_string();
+    // Engines can return non-speech annotations ("[BLANK_AUDIO]", "[MUSIC]") as
+    // ordinary text; those must never be typed into the user's editor.
+    let transcript = stt::clean_transcript(transcript.trim());
     if transcript.is_empty() {
         return Ok(());
     }
