@@ -71,6 +71,8 @@ webkit2gtk = "2.0"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 block2 = "0.6"
+# `_exit()` on quit — see the RunEvent::Exit arm in lib.rs. Transitive already.
+libc = "0.2"
 
 [features]
 default = []

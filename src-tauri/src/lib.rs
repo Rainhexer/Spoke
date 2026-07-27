@@ -1144,12 +1144,26 @@ pub fn run() {
         // tray) must not tear the process down, and closing the onboarding
         // window mustn't either. Only an explicit exit — the tray's Quit item
         // calls `app.exit(0)`, which carries a code — is honored.
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+        .run(|_app, event| match event {
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
                 if code.is_none() {
                     api.prevent_exit();
                 }
             }
+            // Leave without running static destructors on macOS. whisper.cpp
+            // keeps its Metal device in a function-local static, so the
+            // destructor runs from `__cxa_finalize_ranges` inside `exit()` —
+            // after our threads and the cached engine are still very much
+            // alive. It then trips
+            // `GGML_ASSERT([rsets->data count] == 0)` (ggml-metal-device.m)
+            // because the model's Metal buffers are still registered, and
+            // aborts. The abort is what macOS reports as "Spoke quit
+            // unexpectedly" on an otherwise clean quit. Nothing of ours needs
+            // atexit: Tauri has already run `cleanup_before_exit` by the time
+            // this event fires, and config is persisted on write.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Exit => unsafe { libc::_exit(0) },
+            _ => {}
         });
 }
 
