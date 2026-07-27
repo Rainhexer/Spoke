@@ -112,6 +112,23 @@ On first launch, grant when prompted (System Settings → Privacy & Security):
 > Microphone/Accessibility grants. If a rebuilt Spoke.app stops hearing you or
 > stops typing, remove and re-add it in both permission lists.
 
+### macOS code signing
+
+`bundle.macOS.signingIdentity` is `"-"`, so every bundle gets a real ad-hoc
+signature. Don't drop it: with no identity the bundler skips `codesign`
+entirely and the `.app` ships carrying only rustc's linker signature — no
+`_CodeSignature/CodeResources`, Info.plist unbound. That reads as a *broken*
+signature, and Gatekeeper tells anyone who downloads the DMG that
+**"Spoke.app is damaged and can't be opened"**. The release workflow verifies
+the shipped DMG (`codesign --verify --deep --strict`) and fails rather than
+publishing an unopenable build.
+
+Ad-hoc signing is not notarization: users still get the unidentified-developer
+prompt on first launch (System Settings → Privacy & Security → **Open Anyway**).
+To ship notarized builds, set the Apple credentials as env vars — they override
+the config identity: `APPLE_SIGNING_IDENTITY`, `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
+
 ### macOS (Intel)
 
 whisper.cpp's Metal/CoreML paths target Apple Silicon; build CPU-only:

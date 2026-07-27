@@ -188,6 +188,25 @@ jobs:
           done
           ls -la dist
 
+      # Without a signing identity the bundler leaves the .app carrying only
+      # rustc's linker signature: no sealed resources, Info.plist unbound.
+      # Gatekeeper reads that as a broken signature and tells users the app is
+      # "damaged". bundle.macOS.signingIdentity ("-") makes the bundler ad-hoc
+      # sign properly; this gate fails the release rather than shipping a DMG
+      # nobody can open. Notarization is still absent, so users see the normal
+      # unidentified-developer prompt.
+      - name: Verify macOS signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dmg="$(ls dist/*.dmg)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint /tmp/spoke-dmg
+          codesign --verify --deep --strict --verbose=2 /tmp/spoke-dmg/Spoke.app
+          info="$(codesign -dv --verbose=4 /tmp/spoke-dmg/Spoke.app 2>&1)"
+          grep -q '^Sealed Resources' <<<"$info" \
+            || { echo '::error::Spoke.app has no sealed resources; Gatekeeper would call it damaged'; exit 1; }
+          hdiutil detach /tmp/spoke-dmg
+
       - name: Upload to release
         if: github.event_name == 'release'
         shell: bash

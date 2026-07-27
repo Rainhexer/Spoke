@@ -103,7 +103,7 @@ The engine bubble shows which one is active. Change it anytime — no reinstall,
 
 ## First run
 
-- **macOS**: grant **Microphone** and **Accessibility** permissions when prompted. If rebuilding from source, re-grant both after replacing the app — each build gets a new signature.
+- **macOS**: Spoke isn't notarized yet, so the first launch is blocked with "Apple could not verify Spoke" — open **System Settings → Privacy & Security** and click **Open Anyway**. Then grant **Microphone** and **Accessibility** permissions when prompted. If rebuilding from source, re-grant both after replacing the app — each build gets a new signature.
 - **Linux on Wayland**: if the hotkey doesn't respond, try `GDK_BACKEND=x11 spoke`.
 - **Everywhere**: click the bubble to open settings, download a model, and you're set.
 
