@@ -522,6 +522,7 @@ function updateOrbitValues() {
 
 async function openRing() {
   clearTimeout(closeTimer); // cancel a pending post-animation shrink
+  Sfx.play("menuOpen");
   menuState = "ring";
   // Grow the window (and rebuild the orbit for the current flip direction)
   // before the pop-out plays, so the animation is never clipped.
@@ -577,6 +578,9 @@ let closeTimer = null;
 
 function closeMenu() {
   if (capturing) endCapture();
+  // Only when something was actually open — closeMenu() is also called
+  // defensively (minimize, restore) where there is no ring to fold away.
+  if (menuState !== "closed") Sfx.play("menuClose");
   menuState = "closed";
   orbit.classList.add("closed");
   orbit.classList.remove("dimmed");
@@ -622,6 +626,7 @@ subcard.addEventListener("pointerdown", (e) => e.stopPropagation());
 
 async function saveConfig() {
   updateOrbitValues();
+  Sfx.fromConfig(config);
   try {
     await invoke("set_config", { newConfig: config });
     flash("Saved");
@@ -1027,6 +1032,26 @@ function buildOutputCard(body) {
   );
   body.appendChild(destSec);
 
+  // Master switch for every UI sound (menu, record start/stop, done chime).
+  const soundSec = section("Sounds");
+  soundSec.appendChild(
+    chipRow(
+      [
+        { value: "on", label: "On" },
+        { value: "off", label: "Off" },
+      ],
+      config.ui.sounds ? "on" : "off",
+      async (v) => {
+        config.ui.sounds = v === "on";
+        await saveConfig();
+        // Confirm the new setting audibly — silent when it was just turned off.
+        Sfx.play("menuOpen");
+        rerenderCard();
+      }
+    )
+  );
+  body.appendChild(soundSec);
+
   const saveSec = section("Save audio");
   saveSec.appendChild(
     chipRow(
@@ -1267,9 +1292,16 @@ async function onCaptureKey(e) {
 
 function setBubbleState(state, message) {
   const wasDragging = bubble.classList.contains("dragging");
+  const wasRecording = bubble.classList.contains("recording");
   const wasProcessing = bubble.classList.contains("processing");
   bubble.className = state;
   if (wasDragging) bubble.classList.add("dragging");
+  // Sound cues follow the pipeline transitions, not the raw state, so a repeat
+  // of the same state is silent and a failed run (which lands on error before
+  // settling to idle) doesn't ring the "done" chime.
+  if (state === "recording" && !wasRecording) Sfx.play("recordStart");
+  else if (state === "processing" && wasRecording) Sfx.play("recordStop");
+  else if (state === "idle" && wasProcessing) Sfx.play("transcribeDone");
   // Processing → idle means transcription landed and typing begins: fire the
   // "spit" pop so the bubble visibly reacts to finishing.
   if (wasProcessing && state === "idle") popT = mosaicT;
@@ -1514,6 +1546,7 @@ listen("spoke:transcript", (e) => {
 listen("spoke:config", (e) => {
   if (!e.payload) return;
   config = e.payload;
+  Sfx.fromConfig(config);
   if (menuState === "ring") updateOrbitValues();
   else rerenderCard();
 });
@@ -1764,6 +1797,7 @@ async function init() {
   } catch (e) {
     flash("Failed to load config: " + e);
   }
+  Sfx.fromConfig(config);
   buildOrbit();
   await loadBuildInfo();
   updateOrbitValues();

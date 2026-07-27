@@ -68,6 +68,13 @@ Cross-cutting details worth knowing:
   transcriptions instead of typing old text late.
 - **Memory** — on glibc Linux, `malloc_trim` runs after each transcription to
   return freed heap pages to the OS (glibc arenas otherwise ratchet RSS up).
+- **Sounds** — the UI cues (`ui/sounds/*.mp3`, played by `ui/sounds.js`) are a
+  webview concern; Rust owns only the `ui.sounds` master switch, surfaced in the
+  Output card and the tray Settings submenu. The bubble window is hidden rather
+  than closed in tray mode, so its `spoke:state` cues keep firing off-screen.
+  On Linux, WebKitGTK decodes them through GStreamer: the packages depend on
+  `gst-plugins-{base,good}` and the AppImage sets `bundleMediaFramework` so the
+  plugins travel with it — without them the app is simply silent, no error.
 
 ---
 

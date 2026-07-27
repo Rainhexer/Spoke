@@ -217,6 +217,7 @@ bubble_position = "bottom-right"
 bubble_opacity_idle = 0.4
 start_minimized = false   # true: launch into the tray with no bubble on screen
 onboarded = false         # set to true once the first-run wizard completes
+sounds = true             # master switch for the UI sound effects
 ```
 
 ---

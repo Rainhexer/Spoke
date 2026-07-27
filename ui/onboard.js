@@ -558,6 +558,7 @@ async function finish() {
 
 async function boot() {
   config = await invoke("get_config");
+  Sfx.fromConfig(config);
   buildInfo = await invoke("get_build_info");
   try {
     perms = await invoke("check_permissions");
@@ -583,6 +584,8 @@ async function boot() {
   requestAnimationFrame(() =>
     requestAnimationFrame(() => {
       invoke("show_onboarding").catch((e) => console.error("show failed", e));
+      // Welcome chime, once the card is on screen and the clip is decoded.
+      Sfx.ready.then(() => Sfx.play("onboarding"));
     })
   );
 }

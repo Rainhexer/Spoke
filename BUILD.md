@@ -130,15 +130,23 @@ cargo tauri build --features whisper
 ```sh
 sudo apt install build-essential curl wget git cmake pkg-config \
     libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-    librsvg2-dev libssl-dev libasound2-dev
+    librsvg2-dev libssl-dev libasound2-dev \
+    patchelf gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 ```
 
 **Arch:**
 ```sh
 sudo pacman -S --needed base-devel curl wget git cmake \
     webkit2gtk-4.1 gtk3 libappindicator-gtk3 librsvg \
-    openssl pkgconf alsa-lib pipewire-alsa
+    openssl pkgconf alsa-lib pipewire-alsa \
+    patchelf gst-plugins-base gst-plugins-good
 ```
+
+WebKitGTK plays the UI sounds through GStreamer, so the plugin packages are a
+runtime requirement, not just a build one — without them the app runs fine but
+stays silent. `patchelf` is needed only to bundle those plugins into the
+AppImage (`bundleMediaFramework` in `tauri.conf.json`); the AppImage build fails
+with `Failed to run plugin: gstreamer` if it is missing.
 
 ### Build
 

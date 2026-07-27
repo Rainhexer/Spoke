@@ -203,6 +203,10 @@ pub struct Ui {
     /// Start hidden in the tray instead of showing the bubble. Chosen during
     /// onboarding and honored on every subsequent launch.
     pub start_minimized: bool,
+    /// Master switch for the UI sound effects (menu open/close, record
+    /// start/stop, transcription done). On by default; the sounds themselves
+    /// live in `ui/sounds/` and are played by the webview, not by Rust.
+    pub sounds: bool,
 }
 
 impl Default for Ui {
@@ -212,6 +216,7 @@ impl Default for Ui {
             bubble_opacity_idle: 0.4,
             onboarded: false,
             start_minimized: false,
+            sounds: true,
         }
     }
 }
@@ -295,6 +300,15 @@ mod tests {
         assert_eq!(c.recording.format, AudioFormat::Wav);
         assert_eq!(c.ui.bubble_position, "bottom-right");
         assert!((c.ui.bubble_opacity_idle - 0.4).abs() < f32::EPSILON);
+        assert!(c.ui.sounds);
+    }
+
+    #[test]
+    fn sounds_defaults_on_for_configs_written_before_the_field_existed() {
+        let toml = "[ui]\nstart_minimized = true\n";
+        let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.ui.sounds);
+        assert!(c.ui.start_minimized);
     }
 
     #[test]

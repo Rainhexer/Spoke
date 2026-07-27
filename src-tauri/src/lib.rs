@@ -819,6 +819,25 @@ fn disable_damage_propagation(win: &tauri::WebviewWindow) {
     });
 }
 
+/// Mirror the webview's console to stdout when `SPOKE_DEBUG_CONSOLE=1`.
+///
+/// Release builds ship without devtools, so a JS error in a bundled app is
+/// otherwise invisible — the UI just quietly does nothing (this is how the
+/// custom-scheme audio failure hid itself). Run the binary from a terminal with
+/// the variable set to get console.log/warn/error on stdout.
+#[cfg(target_os = "linux")]
+fn enable_console_logging(win: &tauri::WebviewWindow) {
+    if std::env::var("SPOKE_DEBUG_CONSOLE").as_deref() != Ok("1") {
+        return;
+    }
+    let _ = win.with_webview(|webview| {
+        use webkit2gtk::{SettingsExt, WebViewExt};
+        if let Some(settings) = webview.inner().settings() {
+            settings.set_enable_write_console_messages_to_stdout(true);
+        }
+    });
+}
+
 /// Stop GTK/X painting a default (black) background behind the webview.
 ///
 /// The X server fills not-yet-painted regions of a window with its background
@@ -1046,6 +1065,7 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 {
                     disable_damage_propagation(&win);
+                    enable_console_logging(&win);
                     let _ = win.set_resizable(true);
                     clear_gtk_background(&win);
                 }
@@ -1094,6 +1114,7 @@ pub fn run() {
                     #[cfg(target_os = "linux")]
                     {
                         disable_damage_propagation(&win);
+                        enable_console_logging(&win);
                         let _ = win.set_resizable(true);
                         clear_gtk_background(&win);
                         set_window_opacity(&win, 0.0);
@@ -1378,6 +1399,11 @@ fn build_settings_submenu(app: &AppHandle, cfg: &Config) -> tauri::Result<Submen
     // bubble in the meantime.
     let start_tray = CheckMenuItem::with_id(app, "start_minimized:toggle", "Start in tray", true, cfg.ui.start_minimized, None::<&str>)?;
 
+    // Master switch for the webview's sound effects. The sounds are played by
+    // the bubble window (which stays alive in tray mode), so this works the same
+    // whether or not the bubble is on screen.
+    let sounds = CheckMenuItem::with_id(app, "sounds:toggle", "Sounds", true, cfg.ui.sounds, None::<&str>)?;
+
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&mode];
 
     // Model + Acceleration submenus (offline builds only). Mirrors the bubble's
@@ -1516,6 +1542,7 @@ fn build_settings_submenu(app: &AppHandle, cfg: &Config) -> tauri::Result<Submen
     items.push(&sep);
     items.push(&save_audio);
     items.push(&start_tray);
+    items.push(&sounds);
 
     Submenu::with_items(app, "Settings", true, &items)
 }
@@ -1661,6 +1688,9 @@ fn apply_setting(cfg: &mut Config, group: &str, value: &str) -> bool {
         }
         "start_minimized" => {
             cfg.ui.start_minimized = !cfg.ui.start_minimized;
+        }
+        "sounds" => {
+            cfg.ui.sounds = !cfg.ui.sounds;
         }
         _ => return false,
     }

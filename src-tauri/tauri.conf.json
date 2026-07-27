@@ -11,7 +11,7 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:"
     }
   },
   "bundle": {
@@ -20,6 +20,23 @@
     "macOS": {
       "entitlements": "entitlements.plist",
       "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "gstreamer1-plugins-base",
+          "gstreamer1-plugins-good"
+        ]
+      }
     },
     "icon": [
       "icons/32x32.png",
