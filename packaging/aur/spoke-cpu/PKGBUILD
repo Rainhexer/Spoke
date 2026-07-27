@@ -8,7 +8,7 @@ pkgver=0.2
 pkgrel=1
 pkgdesc="Push-to-talk voice dictation (whisper.cpp, CPU only)"
 arch=('x86_64')
-url="https://github.com/FlyvendeMus/Spoke"
+url="https://github.com/Rainhexer/Spoke"
 license=('custom')
 depends=('webkit2gtk-4.1' 'gtk3' 'libappindicator-gtk3' 'librsvg' 'openssl'
          'alsa-lib' 'xdotool' 'gst-plugins-base' 'gst-plugins-good')

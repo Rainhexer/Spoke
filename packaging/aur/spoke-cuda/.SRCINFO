@@ -2,7 +2,7 @@ pkgbase = spoke-cuda
 	pkgdesc = Push-to-talk voice dictation (whisper.cpp, NVIDIA CUDA acceleration)
 	pkgver = 0.2
 	pkgrel = 1
-	url = https://github.com/FlyvendeMus/Spoke
+	url = https://github.com/Rainhexer/Spoke
 	arch = x86_64
 	license = custom
 	makedepends = cargo
@@ -22,7 +22,7 @@ pkgbase = spoke-cuda
 	conflicts = spoke
 	conflicts = spoke-cpu
 	conflicts = spoke-vulkan
-	source = spoke-cuda-0.2.tar.gz::https://github.com/FlyvendeMus/Spoke/archive/refs/tags/v0.2.tar.gz
+	source = spoke-cuda-0.2.tar.gz::https://github.com/Rainhexer/Spoke/archive/refs/tags/v0.2.tar.gz
 	sha256sums = a0be6c1e05b783473e9981ce18d6e21ee7263e7067a9ddb37792d20a09f1a5af
 
 pkgname = spoke-cuda

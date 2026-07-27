@@ -10,7 +10,7 @@
                                           
 ```
 
- [![Download](https://img.shields.io/badge/Download-Latest_Release-4A90D9?style=for-the-badge)](https://github.com/FlyvendeMus/Spoke/releases/latest) [![Donate](https://img.shields.io/badge/Donate-Support_Spoke-FF6B6B?style=for-the-badge)](https://rainhexer.space/donate)
+ [![Download](https://img.shields.io/badge/Download-Latest_Release-4A90D9?style=for-the-badge)](https://github.com/Rainhexer/Spoke/releases/latest) [![Donate](https://img.shields.io/badge/Donate-Support_Spoke-FF6B6B?style=for-the-badge)](https://rainhexer.space/donate)
 
 **Talk instead of type.** Hold a hotkey, speak, release — your words appear wherever your cursor is. Any app, any text field, on **Linux**, **macOS** and **Windows**.
 
@@ -24,7 +24,7 @@ Prefer tap-to-start / tap-to-stop? Switch to **Toggle** mode. Prefer the text on
 
 ## Get Spoke
 
-Pre-built binaries are available on the [Releases page](https://github.com/FlyvendeMus/Spoke/releases) — `.dmg` (macOS), `.deb`/`.rpm`/`.AppImage` (Linux), `.msi`/`.exe` (Windows).
+Pre-built binaries are available on the [Releases page](https://github.com/Rainhexer/Spoke/releases) — `.dmg` (macOS), `.deb`/`.rpm`/`.AppImage` (Linux), `.msi`/`.exe` (Windows).
 
 ### Arch Linux (AUR)
 
