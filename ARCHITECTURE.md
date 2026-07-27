@@ -85,12 +85,22 @@ that bundle them. Heavy dependencies are tied to the flags that need them —
 `coreml` builds. A build without a flag contains none of that flag's code or
 dependencies.
 
-Orthogonal to the platform presets, the `tray-only` feature
-(see [BUILD.md](BUILD.md#tray-only-build-no-bubble-window)) produces a headless
-build: the bubble window (created programmatically in `setup()`, not in
-`tauri.conf.json`) is compiled out, the tray icon is recolored directly from
-Rust state changes, downloads report via desktop notifications, and the event
-loop is kept alive without any windows.
+There is no headless build variant: every build ships the bubble UI. Running
+tray-only is a runtime preference (`ui.start_minimized`, chosen at onboarding)
+— the bubble window is still created in `setup()` (programmatically, not in
+`tauri.conf.json`) but starts hidden, `emit_state` recolors the tray whenever
+`SpokeState.bubble_hidden` is set (tray mode at launch, or minimize-to-tray —
+tracked explicitly because GTK misreports `is_visible()` for a window that was
+built hidden), downloads report via desktop notifications, and
+`ExitRequested` without an exit code is always prevented so a hidden bubble
+never lets the process die.
+
+First run is the one boot where `setup()` puts nothing else on screen: with
+`ui.onboarded` false the tray icon isn't created and the hotkey isn't
+registered, so the onboarding card is the whole app until "Start Spoke".
+`finish_onboarding` then flips the flag (arming the hotkey through
+`apply_config`), builds the tray, and shows the bubble unless the user picked
+tray-only.
 
 ### 2. `platform.rs` (single source of truth)
 
@@ -270,8 +280,8 @@ removes `ggml-<name>.bin` from the runtime `<config dir>/spoke/models/` dir; it
 validates the model name to a safe charset and confines the path to that dir,
 and never touches the read-only `src-tauri/models/` build copy. Download
 success/failure and deletion also raise a desktop notification (via
-`tauri-plugin-notification`, fired from Rust), so headless tray-only builds
-report status without a window.
+`tauri-plugin-notification`, fired from Rust), so status still reaches the user
+when the bubble is hidden in the tray.
 
 Online mode needs no models: audio is sent as one batch REST request to
 Google Speech-to-Text v1 with the API key from config.

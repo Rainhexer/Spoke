@@ -103,10 +103,20 @@ fn default_hotkey() -> String {
     }
 }
 
+/// Offline whenever the binary can actually do it. Builds without the `whisper`
+/// feature have no local engine, so online is the only mode that works there.
+fn default_mode() -> Mode {
+    if cfg!(feature = "whisper") {
+        Mode::Offline
+    } else {
+        Mode::Online
+    }
+}
+
 impl Default for General {
     fn default() -> Self {
         Self {
-            mode: Mode::Offline,
+            mode: default_mode(),
             hotkey: default_hotkey(),
             trigger: Trigger::PushToTalk,
             language: "auto".into(),
@@ -187,6 +197,12 @@ impl Default for Recording {
 pub struct Ui {
     pub bubble_position: String,
     pub bubble_opacity_idle: f32,
+    /// Whether the first-run onboarding has been completed. False on a fresh
+    /// install (no config file yet), so the onboarding card shows exactly once.
+    pub onboarded: bool,
+    /// Start hidden in the tray instead of showing the bubble. Chosen during
+    /// onboarding and honored on every subsequent launch.
+    pub start_minimized: bool,
 }
 
 impl Default for Ui {
@@ -194,6 +210,8 @@ impl Default for Ui {
         Self {
             bubble_position: "bottom-right".into(),
             bubble_opacity_idle: 0.4,
+            onboarded: false,
+            start_minimized: false,
         }
     }
 }
@@ -266,7 +284,7 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let c = Config::default();
-        assert_eq!(c.general.mode, Mode::Offline);
+        assert_eq!(c.general.mode, default_mode());
         assert_eq!(c.general.hotkey, default_hotkey());
         assert_eq!(c.general.trigger, Trigger::PushToTalk);
         assert_eq!(c.general.language, "auto");
@@ -297,7 +315,7 @@ mod tests {
     fn missing_file_yields_defaults() {
         let path = std::env::temp_dir().join("spoke-does-not-exist-xyz.toml");
         let c = Config::load_from(&path).unwrap();
-        assert_eq!(c.general.mode, Mode::Offline);
+        assert_eq!(c.general.mode, default_mode());
     }
 
     #[test]

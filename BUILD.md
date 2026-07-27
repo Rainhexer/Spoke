@@ -47,21 +47,15 @@ Presets are just bundles of these, for finer control:
 
 No flags at all = online-only build (Google STT, no local models).
 
-### Tray-only build (no bubble window)
+### Tray-only running (no build flag)
 
-Add the `tray-only` feature to any platform preset to build a headless Spoke
-that lives entirely in the system tray — the bubble window is compiled out:
-
-```sh
-cargo tauri build --features platform-linux-cpu,tray-only
-```
-
-Everything else works the same: the global hotkey, transcription, and
-injection all run as usual. The tray icon carries the status colours
-(grey idle, red recording, blue processing, yellow warning), the tray menu
-(left or right click) holds the transcript history and all main settings,
-and model downloads report via desktop notifications. Configure anything the
-menu doesn't cover by editing `spoke.toml` directly.
+Running without the bubble is a runtime preference, not a build variant. Every
+build ships the bubble UI; choosing **Start in the tray** during onboarding (or
+`start_minimized = true` in `spoke.toml`) launches Spoke straight into the tray
+with no window on screen. The tray icon carries the status colours (grey idle,
+red recording, blue processing, yellow warning), the tray menu holds the
+transcript history and all main settings, model downloads report via desktop
+notifications, and **Show Spoke** reveals the bubble whenever it's wanted.
 
 ---
 
@@ -69,9 +63,9 @@ menu doesn't cover by editing `spoke.toml` directly.
 
 Publishing a GitHub release triggers
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds
-**all seven platform presets in both variants** (complete and tray-only — 14
-binaries) and attaches every installer to the release, tagged with its preset
-(e.g. `_linux-vulkan`, `_windows-cuda-tray`). A manual run from the Actions tab
+**all seven platform presets** and attaches every installer to the release,
+tagged with its preset (e.g. `_linux-vulkan`, `_windows-cuda`). A manual run
+from the Actions tab
 builds everything without uploading, for testing the pipeline.
 
 ---

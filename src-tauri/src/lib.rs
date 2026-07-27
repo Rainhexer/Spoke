@@ -18,7 +18,6 @@ use stt::SttEngine;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-#[cfg(not(feature = "tray-only"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -75,6 +74,12 @@ pub struct SpokeState {
     /// Most-recent-first transcripts, capped at `TRAY_HISTORY_MAX`, feeding the
     /// tray's quick-history menu.
     history: Mutex<Vec<String>>,
+    /// Whether the bubble is off screen (tray mode at launch, or minimized to
+    /// the tray). Tracked explicitly rather than asked of the window: GTK
+    /// reports a window built with `visible(false)` as visible until it is
+    /// realized, so `is_visible()` can't be trusted at boot. When set, the tray
+    /// icon is the only status channel and `emit_state` recolors it.
+    bubble_hidden: AtomicBool,
 }
 
 impl SpokeState {
@@ -136,11 +141,16 @@ fn prewarm_engine(app: &AppHandle, state: &Arc<SpokeState>) {
     let _ = app;
 }
 
-/// UI-facing recording state, sent on the `spoke:state` event. In tray-only
-/// builds there is no UI to react, so the tray icon is recolored here instead.
+/// UI-facing recording state, sent on the `spoke:state` event. When the bubble
+/// isn't on screen — the user picked tray mode at onboarding, or minimized to
+/// the tray — the tray icon is the only feedback channel, so recolor it here.
 fn emit_state(app: &AppHandle, state: &str, message: Option<String>) {
-    #[cfg(feature = "tray-only")]
-    apply_tray_state(app, if state == "error" { "warning" } else { state });
+    if app
+        .try_state::<Arc<SpokeState>>()
+        .is_some_and(|s| s.bubble_hidden.load(Ordering::SeqCst))
+    {
+        apply_tray_state(app, if state == "error" { "warning" } else { state });
+    }
     let _ = app.emit(
         "spoke:state",
         serde_json::json!({ "state": state, "message": message }),
@@ -167,8 +177,12 @@ fn apply_config(app: &AppHandle, new_config: Config) -> Result<(), String> {
     new_config.save().map_err(|e| e.to_string())?;
     let state = app.state::<Arc<SpokeState>>();
     *state.config.lock().unwrap() = new_config.clone();
-    // Re-register the hotkey in case it changed.
-    register_hotkey(app, &new_config).map_err(|e| e.to_string())?;
+    // Re-register the hotkey in case it changed. Not while first-run
+    // onboarding is still open — the hotkey goes live with the rest of the app
+    // when `finish_onboarding` flips `onboarded` and calls back through here.
+    if new_config.ui.onboarded {
+        register_hotkey(app, &new_config).map_err(|e| e.to_string())?;
+    }
     // Rebuild the engine in the background if engine-relevant config changed
     // (no-op otherwise), so the next recording doesn't pay the init cost.
     prewarm_engine(app, &state);
@@ -365,8 +379,9 @@ async fn download_coreml_bundle(app: AppHandle, model: String) -> Result<(), Str
 }
 
 /// Fire a desktop notification. Works from the Rust side regardless of window
-/// capabilities, so headless tray-only builds get download status too. Silently
-/// ignores failures (a missing notification daemon must never break a download).
+/// capabilities, so a user running with the bubble hidden still gets download
+/// status. Silently ignores failures (a missing notification daemon must never
+/// break a download).
 #[cfg(feature = "whisper")]
 fn notify(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
@@ -804,6 +819,62 @@ fn disable_damage_propagation(win: &tauri::WebviewWindow) {
     });
 }
 
+/// Stop GTK/X painting a default (black) background behind the webview.
+///
+/// The X server fills not-yet-painted regions of a window with its background
+/// before WebKit's first frame lands; the default fill is black, which flashes
+/// as a dark rectangle when a window is mapped or resized. Marking the window
+/// app-paintable and setting the X-level background to transparent black (valid
+/// for the ARGB visual) makes those regions simply invisible instead.
+#[cfg(target_os = "linux")]
+fn clear_gtk_background(win: &tauri::WebviewWindow) {
+    use gtk::glib::translate::ToGlibPtr;
+    use gtk::prelude::*;
+    let Ok(gtk_win) = win.gtk_window() else {
+        return;
+    };
+    gtk_win.set_app_paintable(true);
+    if let Some(gdk_win) = gtk_win.window() {
+        let rgba = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0);
+        // Deprecated in GTK 3.22 but still functional; the rust binding gates
+        // it away, so call the C symbol.
+        unsafe {
+            gtk::gdk::ffi::gdk_window_set_background_rgba(
+                gdk_win.to_glib_none().0,
+                rgba.to_glib_none().0,
+            );
+        }
+    }
+}
+
+/// Set a window's compositor opacity. Unlike hiding, this leaves the window
+/// mapped, so the webview keeps rendering while it is invisible.
+#[cfg(target_os = "linux")]
+fn set_window_opacity(win: &tauri::WebviewWindow, alpha: f64) {
+    use gtk::prelude::*;
+    if let Ok(gtk_win) = win.gtk_window() {
+        gtk_win.set_opacity(alpha);
+    }
+}
+
+/// Reveal the onboarding card once it has painted (see the builder in `setup`).
+/// Idempotent: safe to call from both the UI and the watchdog.
+fn show_onboard_window(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("onboard") else {
+        return;
+    };
+    #[cfg(target_os = "linux")]
+    set_window_opacity(&win, 1.0);
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
+/// Called by onboard.js once the first step has rendered.
+#[tauri::command]
+fn show_onboarding(app: AppHandle) {
+    show_onboard_window(&app);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Linux windowing: force the X11 GDK backend (XWayland on Wayland sessions)
@@ -814,17 +885,28 @@ pub fn run() {
     // GPU compositing disabled to show transparent windows at all — software
     // rendering that ghosts and mangles drop shadows. Under X11, stock
     // WebKitGTK compositing (DMABUF renderer included) presents the transparent
-    // window cleanly. Do NOT set WEBKIT_DISABLE_COMPOSITING_MODE or
-    // WEBKIT_DISABLE_DMABUF_RENDERER here: both drop WebKit to a fallback path
-    // that never clears the window's alpha buffer between frames, so
-    // translucent pixels (drop shadows) accumulate darker every repaint and
-    // moving elements leave trails. If the webview ever comes up blank
-    // (older NVIDIA driver combos), export WEBKIT_DISABLE_DMABUF_RENDERER=1
-    // manually as a last resort and expect those artifacts.
+    // window cleanly — on Mesa. Do NOT set WEBKIT_DISABLE_COMPOSITING_MODE
+    // here, and do not disable the DMABUF renderer on non-NVIDIA systems:
+    // that fallback path never clears the window's alpha buffer between
+    // frames, so translucent pixels (drop shadows) accumulate darker every
+    // repaint and moving elements leave trails.
+    //
+    // The NVIDIA proprietary driver is the exception. There the DMABUF
+    // renderer's buffers never reach the X server for our transparent,
+    // undecorated windows: the window maps (it shows up in the taskbar and in
+    // the window list) but presents no frame at all, so the bubble and the
+    // onboarding card are simply invisible. Blank windows beat shadow
+    // artifacts, so disable that renderer when the NVIDIA kernel module is
+    // loaded. Set WEBKIT_DISABLE_DMABUF_RENDERER yourself (to anything,
+    // including 0) to override this either way.
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         if std::env::var("GDK_BACKEND").is_err() {
             std::env::set_var("GDK_BACKEND", "x11");
+        }
+        let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists();
+        if nvidia && std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         }
     }
 
@@ -834,6 +916,10 @@ pub fn run() {
     let (amp_tx, amp_rx) = std::sync::mpsc::channel::<f32>();
     let audio = AudioEngine::spawn(amp_tx);
 
+    // Decided here rather than in `setup()`: the engine prewarm emits state
+    // (and so consults this flag) from a task spawned before setup finishes.
+    let bubble_hidden = !(config.ui.onboarded && !config.ui.start_minimized);
+
     let state = Arc::new(SpokeState {
         config: Mutex::new(config),
         audio,
@@ -841,6 +927,7 @@ pub fn run() {
         session: AtomicU64::new(0),
         engine: Mutex::new(None),
         history: Mutex::new(Vec::new()),
+        bubble_hidden: AtomicBool::new(bubble_hidden),
     });
 
     let builder = tauri::Builder::default()
@@ -856,6 +943,8 @@ pub fn run() {
             list_audio_devices,
             nudge_repaint,
             minimize_to_tray,
+            show_onboarding,
+            finish_onboarding,
             set_tray_state,
             set_window_bounds,
             set_window_size_anchored,
@@ -888,25 +977,43 @@ pub fn run() {
                 }
             });
 
-            // Register the configured hotkey.
+            // Register the configured hotkey. Skipped during first-run
+            // onboarding: nothing but the card should be live yet, and a
+            // stray hotkey press there would record with no bubble on screen
+            // and type the transcript into whatever had focus. Onboarding's
+            // final `finish_onboarding` → `apply_config` registers it.
             let cfg = app.state::<Arc<SpokeState>>().config_snapshot();
-            if let Err(e) = register_hotkey(&handle, &cfg) {
-                eprintln!("[spoke] hotkey registration failed: {e}");
+            if cfg.ui.onboarded {
+                if let Err(e) = register_hotkey(&handle, &cfg) {
+                    eprintln!("[spoke] hotkey registration failed: {e}");
+                }
             }
 
             // Warm the STT engine so the first recording is fast.
             prewarm_engine(&handle, &app.state::<Arc<SpokeState>>());
 
-            build_tray(app)?;
+            // Onboarding owns the screen: no tray icon (and so no settings
+            // menu) until the user presses "Start Spoke". `finish_onboarding`
+            // builds it.
+            if cfg.ui.onboarded {
+                build_tray(&handle)?;
+            }
             #[cfg(feature = "whisper")]
             install_tray_download_feedback(&handle);
 
             // The bubble window is created here rather than declared in
-            // tauri.conf.json so that `tray-only` builds compile no window at
-            // all — the whole block below is cfg'd out, and generate_context
-            // sees an empty `windows` array. A single `--features tray-only`
-            // is therefore fully headless; no companion config is needed.
-            #[cfg(not(feature = "tray-only"))]
+            // tauri.conf.json so its initial visibility can depend on config:
+            // first-run onboarding hides the bubble until the card is dismissed,
+            // and a returning user who chose tray mode also boots hidden. The
+            // bubble is always built — tray mode is a runtime preference, not a
+            // build variant, so it stays one click away from the tray menu.
+            let show_bubble_at_boot = cfg.ui.onboarded && !cfg.ui.start_minimized;
+            if cfg.ui.onboarded && cfg.ui.start_minimized {
+                // Launching straight into the tray: colour the icon idle now,
+                // so it reads as "Spoke is running" rather than the app icon.
+                apply_tray_state(&handle, "idle");
+            }
+
             {
                 use tauri::{WebviewUrl, WebviewWindowBuilder};
                 WebviewWindowBuilder::new(app, "bubble", WebviewUrl::default())
@@ -918,7 +1025,7 @@ pub fn run() {
                     .always_on_top(true)
                     .skip_taskbar(true)
                     .shadow(false)
-                    .visible(true)
+                    .visible(show_bubble_at_boot)
                     .focused(false)
                     .build()?;
             }
@@ -940,29 +1047,7 @@ pub fn run() {
                 {
                     disable_damage_propagation(&win);
                     let _ = win.set_resizable(true);
-                    // After a resize, the X server fills not-yet-painted
-                    // regions with the window's background before WebKit's
-                    // first frame lands; the default fill is black, which
-                    // flashes as a dark rectangle when the menu opens. Stop
-                    // GTK painting a default background and set the X-level
-                    // background to transparent black (valid for the ARGB
-                    // visual) so the exposed region is simply invisible.
-                    if let Ok(gtk_win) = win.gtk_window() {
-                        use gtk::glib::translate::ToGlibPtr;
-                        use gtk::prelude::*;
-                        gtk_win.set_app_paintable(true);
-                        if let Some(gdk_win) = gtk_win.window() {
-                            let rgba = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0);
-                            // Deprecated in GTK 3.22 but still functional; the
-                            // rust binding gates it away, so call the C symbol.
-                            unsafe {
-                                gtk::gdk::ffi::gdk_window_set_background_rgba(
-                                    gdk_win.to_glib_none().0,
-                                    rgba.to_glib_none().0,
-                                );
-                            }
-                        }
-                    }
+                    clear_gtk_background(&win);
                 }
 
                 // Keep the bubble visible when the user switches Spaces on macOS.
@@ -970,31 +1055,77 @@ pub fn run() {
                 let _ = win.set_visible_on_all_workspaces(true);
             }
 
+            // Fresh install: open the onboarding card centered on screen. It walks
+            // the user through startup prefs, permissions, and model download, then
+            // calls `finish_onboarding` to reveal the bubble.
+            //
+            // Revealed only once painted: a borderless transparent window is
+            // mapped before the webview has drawn anything, so the compositor
+            // shows an empty (black) frame for the first ~second.
+            // `show_onboarding` — called from onboard.js once the first step is
+            // on screen — reveals it; a watchdog reveals it anyway if that call
+            // never arrives, so a JS error can't leave the user with no
+            // onboarding at all.
+            //
+            // On Linux "hidden" means mapped at zero opacity rather than
+            // unmapped. WebKitGTK only renders into a mapped window, and on
+            // some GPU stacks (NVIDIA + the DMABUF renderer) a webview created
+            // in an unmapped window never presents a frame after a later
+            // show() — the window comes up permanently blank. Zero opacity
+            // keeps it invisible while it paints normally.
+            if !cfg.ui.onboarded {
+                use tauri::{WebviewUrl, WebviewWindowBuilder};
+                if let Ok(win) =
+                    WebviewWindowBuilder::new(app, "onboard", WebviewUrl::App("onboard.html".into()))
+                        .title("Welcome to Spoke")
+                        .inner_size(460.0, 660.0)
+                        .resizable(false)
+                        .decorations(false)
+                        .transparent(true)
+                        .center()
+                        .always_on_top(true)
+                        .visible(false)
+                        .focused(true)
+                        .build()
+                {
+                    // Same GTK snap-to-child-size trap as the bubble: a
+                    // non-resizable GTK window collapses to the webview's
+                    // natural size, which strands the card off-screen.
+                    #[cfg(target_os = "linux")]
+                    {
+                        disable_damage_propagation(&win);
+                        let _ = win.set_resizable(true);
+                        clear_gtk_background(&win);
+                        set_window_opacity(&win, 0.0);
+                        let _ = win.show();
+                    }
+                    let _ = win;
+
+                    let watchdog = handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(2500));
+                        show_onboard_window(&watchdog);
+                    });
+                }
+            }
+
             Ok(())
         });
 
-    #[cfg(not(feature = "tray-only"))]
     builder
-        .run(tauri::generate_context!())
-        .expect("error while running Spoke");
-
-    // With no windows, nothing keeps the event loop alive by default and a
-    // spurious exit request would tear the tray app down; only an explicit
-    // exit (the tray's Quit item calls `app.exit(0)`, which carries a code)
-    // is honored.
-    #[cfg(feature = "tray-only")]
-    {
-        let app = builder
-            .build(tauri::generate_context!())
-            .expect("error while building Spoke");
-        app.run(|_app, event| {
+        .build(tauri::generate_context!())
+        .expect("error while building Spoke")
+        // Spoke is a tray app: hiding the bubble (tray mode, or minimize to
+        // tray) must not tear the process down, and closing the onboarding
+        // window mustn't either. Only an explicit exit — the tray's Quit item
+        // calls `app.exit(0)`, which carries a code — is honored.
+        .run(|_app, event| {
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();
                 }
             }
         });
-    }
 }
 
 fn build_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -1023,18 +1154,22 @@ fn build_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .build()
 }
 
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let handle = app.handle();
+/// Create the tray icon. Takes an `AppHandle` rather than `&App` because the
+/// tray is not always built during `setup`: first-run onboarding owns the whole
+/// screen, so the tray only appears once `finish_onboarding` runs. No-ops if the
+/// tray is already up.
+fn build_tray(handle: &AppHandle) -> tauri::Result<()> {
+    if handle.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
     let menu = build_tray_menu(handle)?;
     let builder = TrayIconBuilder::with_id(TRAY_ID)
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(handle.default_window_icon().unwrap().clone())
         .menu(&menu)
-        // Left click restores the window; the menu is right-click only.
-        // Tray-only builds have no window, so left click opens the menu too.
-        .show_menu_on_left_click(cfg!(feature = "tray-only"))
+        // Left click restores the bubble; the menu is right-click only.
+        .show_menu_on_left_click(false)
         .tooltip("Spoke")
         .on_menu_event(handle_tray_menu_event);
-    #[cfg(not(feature = "tray-only"))]
     let builder = builder.on_tray_icon_event(|tray, event| {
         if let TrayIconEvent::Click {
             button: MouseButton::Left,
@@ -1045,14 +1180,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             restore_from_tray(tray.app_handle());
         }
     });
-    builder.build(app)?;
+    builder.build(handle)?;
     Ok(())
 }
 
 /// Wire model-download events (the same ones the bubble listens to) into tray
 /// feedback: the tray tooltip shows live download percent, and the menu rebuilds
 /// on completion so a freshly downloaded model moves from "Download model" up
-/// into "Model". Lets tray-only (headless) builds download models with feedback.
+/// into "Model". Keeps model downloads legible when the bubble is hidden.
 #[cfg(feature = "whisper")]
 fn install_tray_download_feedback(handle: &AppHandle) {
     use tauri::Listener;
@@ -1149,13 +1284,6 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let settings = build_settings_submenu(app, &cfg)?;
 
     // ---- Assemble top level ----
-    // Tray-only builds have no bubble window to show.
-    #[cfg(feature = "tray-only")]
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = {
-        let _ = (&show, &sep1);
-        Vec::new()
-    };
-    #[cfg(not(feature = "tray-only"))]
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&show, &sep1];
     items.push(&history_header);
     if history.is_empty() {
@@ -1178,11 +1306,10 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 /// The Settings submenu: mode, model management (use/download/delete, offline
-/// only) + acceleration, trigger, output, language, microphone, and the
-/// save-audio toggle — the same controls
-/// the bubble's radial menu exposes, minus the two that need free-text/key
-/// capture a native menu can't provide (the hotkey recorder and the online API
-/// key). Ids are `<group>:<value>`; the handler routes them.
+/// only) + acceleration, trigger, hotkey presets, output, language, microphone,
+/// and the save-audio toggle — the same controls the bubble's radial menu
+/// exposes, minus the online API key which needs free-text entry a native menu
+/// can't provide. Ids are `<group>:<value>`; the handler routes them.
 fn build_settings_submenu(app: &AppHandle, cfg: &Config) -> tauri::Result<Submenu<tauri::Wry>> {
     use config::{Mode, OutputDest, Trigger};
 
@@ -1245,6 +1372,11 @@ fn build_settings_submenu(app: &AppHandle, cfg: &Config) -> tauri::Result<Submen
 
     // Save-audio toggle.
     let save_audio = CheckMenuItem::with_id(app, "save_audio:toggle", "Save recordings", true, cfg.recording.save_audio, None::<&str>)?;
+
+    // Start in the tray (no bubble on launch) — the onboarding choice, editable
+    // afterwards. Takes effect on the next launch; "Show Spoke" reveals the
+    // bubble in the meantime.
+    let start_tray = CheckMenuItem::with_id(app, "start_minimized:toggle", "Start in tray", true, cfg.ui.start_minimized, None::<&str>)?;
 
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&mode];
 
@@ -1344,13 +1476,46 @@ fn build_settings_submenu(app: &AppHandle, cfg: &Config) -> tauri::Result<Submen
         items.push(&accel_menu);
     }
 
+    // Hotkey presets. The bubble's UI has an interactive key-capture recorder
+    // for custom binds; here we offer a curated set of common options.
+    let hotkeys: &[(&str, &str)] = if cfg!(target_os = "macos") {
+        &[
+            ("cmd+shift+s", "⌘+Shift+S"),
+            ("cmd+shift+space", "⌘+Shift+Space"),
+            ("cmd+option+s", "⌘+Option+S"),
+            ("cmd+shift+v", "⌘+Shift+V"),
+            ("option+space", "⌥+Space"),
+            ("ctrl+shift+space", "⌃+Shift+Space"),
+        ]
+    } else {
+        &[
+            ("ctrl+alt+space", "Ctrl+Alt+Space"),
+            ("ctrl+alt+s", "Ctrl+Alt+S"),
+            ("ctrl+shift+space", "Ctrl+Shift+Space"),
+            ("ctrl+shift+s", "Ctrl+Shift+S"),
+            ("ctrl+alt+v", "Ctrl+Alt+V"),
+            ("ctrl+alt+grave", "Ctrl+Alt+`"),
+        ]
+    };
+    let hotkey_items: Vec<CheckMenuItem<tauri::Wry>> = hotkeys
+        .iter()
+        .map(|(combo, label)| {
+            CheckMenuItem::with_id(app, format!("hotkey:{combo}"), *label, true, cfg.general.hotkey == *combo, None::<&str>)
+        })
+        .collect::<tauri::Result<_>>()?;
+    let hotkey_refs: Vec<&dyn IsMenuItem<tauri::Wry>> =
+        hotkey_items.iter().map(|m| m as &dyn IsMenuItem<tauri::Wry>).collect();
+    let hotkey_menu = Submenu::with_items(app, "Hotkey", true, &hotkey_refs)?;
+
     items.push(&trigger);
+    items.push(&hotkey_menu);
     items.push(&output);
     items.push(&language);
     items.push(&microphone);
     let sep = PredefinedMenuItem::separator(app)?;
     items.push(&sep);
     items.push(&save_audio);
+    items.push(&start_tray);
 
     Submenu::with_items(app, "Settings", true, &items)
 }
@@ -1440,6 +1605,12 @@ fn apply_setting(cfg: &mut Config, group: &str, value: &str) -> bool {
             }
             cfg.general.mode = m;
         }
+        "hotkey" => {
+            if cfg.general.hotkey == value {
+                return false;
+            }
+            cfg.general.hotkey = value.to_string();
+        }
         "trigger" => {
             let t = match value {
                 "toggle" => Trigger::Toggle,
@@ -1488,6 +1659,9 @@ fn apply_setting(cfg: &mut Config, group: &str, value: &str) -> bool {
         "save_audio" => {
             cfg.recording.save_audio = !cfg.recording.save_audio;
         }
+        "start_minimized" => {
+            cfg.ui.start_minimized = !cfg.ui.start_minimized;
+        }
         _ => return false,
     }
     true
@@ -1495,9 +1669,21 @@ fn apply_setting(cfg: &mut Config, group: &str, value: &str) -> bool {
 
 /// Show the bubble again and reset the tray to its neutral icon.
 fn restore_from_tray(app: &AppHandle) {
+    app.state::<Arc<SpokeState>>()
+        .bubble_hidden
+        .store(false, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window("bubble") {
         let _ = win.show();
         let _ = win.set_focus();
+        // A bubble that booted straight into tray mode has never been mapped,
+        // and WebKitGTK doesn't always present a first frame for a webview that
+        // was created hidden. Bounce the size by a pixel to force one; the
+        // bubble re-applies its own geometry from JS on the next frame anyway.
+        #[cfg(target_os = "linux")]
+        if let Ok(size) = win.outer_size() {
+            let _ = win.set_size(tauri::PhysicalSize::new(size.width + 1, size.height));
+            let _ = win.set_size(size);
+        }
     }
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Some(icon) = app.default_window_icon().cloned() {
@@ -1511,9 +1697,53 @@ fn restore_from_tray(app: &AppHandle) {
 /// Hide every window; the app lives only in the tray until restored.
 #[tauri::command]
 fn minimize_to_tray(app: AppHandle) {
+    app.state::<Arc<SpokeState>>()
+        .bubble_hidden
+        .store(true, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window("bubble") {
         let _ = win.hide();
     }
+}
+
+/// Mark first-run onboarding as complete: flip the `onboarded` flag (which also
+/// arms the hotkey via `apply_config`), create the tray icon, close the
+/// onboarding card, and reveal the bubble (unless the user chose to start in the
+/// tray). Until this runs the card is the only part of Spoke on screen. The
+/// onboarding UI has already written the other prefs via `set_config`; setting
+/// the flag here — rather than trusting the client — keeps it a one-shot.
+#[tauri::command]
+fn finish_onboarding(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<Arc<SpokeState>>();
+    let mut cfg = state.config_snapshot();
+    cfg.ui.onboarded = true;
+    apply_config(&app, cfg.clone())?;
+
+    // The tray was withheld while the card was up so onboarding was the only
+    // thing on screen; bring it up now, before any tray state is applied.
+    if let Err(e) = build_tray(&app) {
+        eprintln!("[spoke] tray creation failed: {e}");
+    }
+
+    if let Some(win) = app.get_webview_window("onboard") {
+        let _ = win.close();
+    }
+    state
+        .bubble_hidden
+        .store(cfg.ui.start_minimized, Ordering::SeqCst);
+    if let Some(win) = app.get_webview_window("bubble") {
+        if cfg.ui.start_minimized {
+            let _ = win.hide();
+        } else {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+    }
+    if cfg.ui.start_minimized {
+        // Nothing on screen from here on: put the tray icon into its idle
+        // colour so the user can tell Spoke is running.
+        apply_tray_state(&app, "idle");
+    }
+    Ok(())
 }
 
 /// Recolor the tray icon to reflect app state:

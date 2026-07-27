@@ -1,0 +1,532 @@
+/* Onboarding card. Shares the bubble UI's dark palette (see style.css) but is a
+   standalone, self-contained stylesheet for the "onboard" window. */
+:root {
+  --bg: #08080a;
+  --bg-soft: #0c0c11;
+  --bg-lift: #141419;
+  --border: #26262e;
+  --border-soft: #1c1c22;
+  --text: #d4d4dc;
+  --muted: #9494a0;
+  --accent: #26d4c4;
+  --accent-dim: rgba(38, 212, 196, 0.14);
+  --rec: #ff6c4b;
+  --warn: #ffb020;
+  --ok: #38d39f;
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  color: var(--text);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The card fills the (transparent) window; corners outside the radius show the
+   desktop through. */
+#card {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #0d0d13 0%, #08080a 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+
+/* ---- Header (drag region) ---- */
+#ob-header {
+  flex: 0 0 auto;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+  -webkit-app-region: drag;
+}
+.ob-brand {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#ob-close {
+  -webkit-app-region: no-drag;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+#ob-close:hover {
+  background: var(--bg-lift);
+  color: var(--text);
+}
+
+/* ---- Progress dots ---- */
+#ob-dots {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 7px;
+  justify-content: center;
+  padding: 16px 0 6px;
+}
+#ob-dots .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.25s ease, transform 0.25s var(--spring);
+}
+#ob-dots .dot.done {
+  background: var(--accent-dim);
+}
+#ob-dots .dot.active {
+  background: var(--accent);
+  transform: scale(1.35);
+}
+
+/* ---- Body ---- */
+#ob-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px 26px 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+#ob-body::-webkit-scrollbar {
+  width: 8px;
+}
+#ob-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.ob-step {
+  animation: obIn 0.32s var(--spring) both;
+}
+@keyframes obIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ob-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 6px 0 6px;
+  color: var(--text);
+}
+.ob-lede {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+.ob-section-label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 18px 0 9px;
+}
+
+/* ---- Welcome: how-it-works steps ---- */
+.hiw {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 20px;
+}
+.hiw-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+.hiw-num {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-lift);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+}
+.hiw-txt {
+  font-size: 13px;
+  line-height: 1.5;
+  padding-top: 3px;
+}
+.hiw-txt b {
+  color: var(--text);
+  font-weight: 600;
+}
+.hiw-txt span {
+  color: var(--muted);
+}
+
+.kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--bg-lift);
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ---- Big selectable option cards (startup step) ---- */
+.opt-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+}
+.opt {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  padding: 15px 16px;
+  cursor: pointer;
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+}
+.opt:hover {
+  border-color: #34343e;
+  transform: translateY(-1px);
+}
+.opt.sel {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.opt-ico {
+  flex: 0 0 22px;
+  font-size: 19px;
+  line-height: 1.2;
+}
+.opt-h {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+.opt-p {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.opt-check {
+  margin-left: auto;
+  align-self: center;
+  color: var(--accent);
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.opt.sel .opt-check {
+  opacity: 1;
+}
+
+/* ---- Inline advisory note (e.g. the Wayland bubble warning) ---- */
+.ob-note {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.ob-note b {
+  color: var(--text);
+  font-weight: 600;
+}
+.ob-note.warn {
+  border-color: rgba(255, 176, 32, 0.35);
+  background: rgba(255, 176, 32, 0.08);
+}
+.ob-note.warn b {
+  color: var(--warn);
+}
+
+/* ---- Chip rows (mode / model) ---- */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-soft);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 62px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.chip:hover {
+  border-color: #34343e;
+}
+.chip.sel {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.chip .note {
+  font-size: 10px;
+  color: var(--muted);
+}
+.chip.installed::after {
+  content: "✓";
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ok);
+  color: #04140d;
+  font-size: 10px;
+  display: grid;
+  place-items: center;
+}
+
+/* ---- Download / status row ---- */
+.dl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 13px;
+  font-size: 12px;
+}
+.dl-status {
+  color: var(--muted);
+}
+.dl-status.installed {
+  color: var(--ok);
+}
+.dl-status.downloading {
+  color: var(--accent);
+}
+.dl-status.error {
+  color: var(--rec);
+}
+.mini-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-lift);
+  color: var(--text);
+  padding: 6px 13px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.mini-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.mini-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hide {
+  display: none !important;
+}
+
+/* ---- API key input ---- */
+.ob-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.ob-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---- Permission rows ---- */
+.perm {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.perm:last-child {
+  border-bottom: none;
+}
+.perm-ico {
+  font-size: 18px;
+  flex: 0 0 22px;
+}
+.perm-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.perm-h {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.perm-p {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.perm-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.perm-state.granted {
+  color: var(--ok);
+  border-color: rgba(56, 211, 159, 0.4);
+}
+.perm-state.denied {
+  color: var(--warn);
+  border-color: rgba(255, 176, 32, 0.4);
+}
+
+/* ---- Done step ---- */
+.done-mark {
+  width: 58px;
+  height: 58px;
+  margin: 14px auto 4px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-size: 27px;
+  animation: obPop 0.4s var(--spring) both;
+}
+@keyframes obPop {
+  from {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.summary {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  overflow: hidden;
+}
+.summary li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.summary li:last-child {
+  border-bottom: none;
+}
+.summary .k {
+  color: var(--muted);
+}
+.summary .v {
+  color: var(--text);
+  text-align: right;
+}
+
+/* ---- Footer nav ---- */
+#ob-nav {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--border-soft);
+}
+#ob-nav button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 10px 20px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease, opacity 0.15s ease;
+}
+#ob-nav button:active {
+  transform: translateY(1px);
+}
+.ghost {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+.ghost:hover {
+  color: var(--text);
+  border-color: #34343e;
+}
+.ghost.invisible {
+  visibility: hidden;
+}
+.primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #04140d;
+  font-weight: 600;
+  margin-left: auto;
+}
+.primary:hover {
+  background: #34e6d6;
+}

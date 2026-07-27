@@ -1,12 +1,11 @@
 # Builds every shipping variant of Spoke and attaches the installers to the
 # GitHub release that triggered the run.
 #
-# Matrix: one job per platform preset (see Cargo.toml) × two variants:
-#   complete  — the normal build with the bubble UI
-#   tray      — the `tray-only` feature: headless, tray icon + menu only
+# Matrix: one job per platform preset (see Cargo.toml). Every build ships the
+# bubble UI; running Spoke tray-only is a runtime setting, not a build variant.
 #
-# Artifact names get a `<preset>` and (for tray builds) a `-tray` tag inserted
-# so the fourteen jobs never collide on the same release.
+# Artifact names get a `<preset>` tag inserted so the seven jobs never collide
+# on the same release.
 #
 # Manual runs (workflow_dispatch) build everything but skip the upload step —
 # useful for testing the pipeline without cutting a release.
@@ -26,12 +25,11 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.preset }} (${{ matrix.variant }})
+    name: ${{ matrix.preset }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        variant: [complete, tray]
         preset:
           - platform-macos
           - platform-linux-cpu
@@ -71,7 +69,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.label }}-${{ matrix.variant }}
+          key: ${{ matrix.label }}
 
       - name: Install Tauri CLI
         uses: actions/setup-node@v4
@@ -170,22 +168,16 @@ jobs:
       # linux-cuda skips the AppImage: linuxdeploy chokes trying to resolve
       # the CUDA runtime libraries, and bundling them would be enormous
       # anyway — deb/rpm users get CUDA from their distro.
-      - name: Build (complete)
-        if: matrix.variant == 'complete'
+      - name: Build
         run: tauri build --features ${{ matrix.preset }} ${{ matrix.preset == 'platform-linux-cuda' && '--bundles deb,rpm' || '' }}
 
-      - name: Build (tray-only)
-        if: matrix.variant == 'tray'
-        run: tauri build --features ${{ matrix.preset }},tray-only ${{ matrix.preset == 'platform-linux-cuda' && '--bundles deb,rpm' || '' }}
-
-      # Bundle filenames only encode version + arch; add the preset (and tray
-      # tag) so uploads from parallel jobs never overwrite each other.
+      # Bundle filenames only encode version + arch; add the preset tag so
+      # uploads from parallel jobs never overwrite each other.
       - name: Collect and tag artifacts
         shell: bash
         run: |
           mkdir -p dist
           tag="${{ matrix.label }}"
-          if [ "${{ matrix.variant }}" = "tray" ]; then tag="$tag-tray"; fi
           find "${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle" \
               -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
                          -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) \
@@ -206,5 +198,5 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: spoke-${{ matrix.label }}-${{ matrix.variant }}
+          name: spoke-${{ matrix.label }}
           path: dist/*

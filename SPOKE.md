@@ -215,6 +215,8 @@ input_device = ""         # microphone name; empty = system default
 [ui]
 bubble_position = "bottom-right"
 bubble_opacity_idle = 0.4
+start_minimized = false   # true: launch into the tray with no bubble on screen
+onboarded = false         # set to true once the first-run wizard completes
 ```
 
 ---

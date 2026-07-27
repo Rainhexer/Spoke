@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welcome to Spoke</title>
+    <link rel="stylesheet" href="onboard.css" />
+  </head>
+  <body>
+    <!-- First-run onboarding card. Lives in its own centered, borderless,
+         transparent window (see the "onboard" window in lib.rs). The rounded
+         card fills the window; the window corners outside the radius are
+         transparent. Header is the drag region; the ✕ skips setup. -->
+    <main id="card">
+      <header id="ob-header" data-tauri-drag-region>
+        <span class="ob-brand" data-tauri-drag-region>Spoke</span>
+        <button id="ob-close" title="Skip setup" aria-label="Skip setup">✕</button>
+      </header>
+
+      <!-- Step progress dots, filled by JS. -->
+      <div id="ob-dots" aria-hidden="true"></div>
+
+      <!-- Active step content, rendered by JS. -->
+      <section id="ob-body"></section>
+
+      <footer id="ob-nav">
+        <button id="ob-back" class="ghost" type="button">Back</button>
+        <button id="ob-next" class="primary" type="button">Next</button>
+      </footer>
+    </main>
+
+    <script src="onboard.js"></script>
+  </body>
+</html>

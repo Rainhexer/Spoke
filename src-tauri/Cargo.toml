@@ -91,14 +91,6 @@ cuda = ["whisper", "whisper-rs/cuda"]
 # Linux/Windows only.
 vulkan = ["whisper", "whisper-rs/vulkan"]
 
-# Headless build: no bubble window — Spoke lives entirely in the system tray
-# (status colors + full settings/history context menu). The bubble window is
-# created programmatically in lib.rs setup(), gated on `not(tray-only)`, so this
-# flag alone compiles out the window with no companion config needed. Combine
-# with any platform preset:
-#   cargo tauri build --features platform-linux-cpu,tray-only
-tray-only = []
-
 # ---- Platform presets -------------------------------------------------------
 # One flag per shipping target. These are the flags release builds should use;
 # each expands to exactly the capabilities that platform supports, and

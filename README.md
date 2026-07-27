@@ -24,9 +24,23 @@ Prefer tap-to-start / tap-to-stop? Switch to **Toggle** mode. Prefer the text on
 
 ## Get Spoke
 
-Pre-built binaries are available on the [Releases page](https://github.com/FlyvendeMus/Spoke/releases).
+Pre-built binaries are available on the [Releases page](https://github.com/FlyvendeMus/Spoke/releases) — `.dmg` (macOS), `.deb`/`.rpm`/`.AppImage` (Linux), `.msi`/`.exe` (Windows).
 
-To build from source, see [BUILD.md](BUILD.md). It takes one command per platform once the toolchain is installed — the build produces a normal installer (`.dmg`, `.deb`, `.rpm`, `.AppImage`, `.msi`, or `.exe`). Speech models are downloaded in-app.
+### Arch Linux (AUR)
+
+Pick the backend you want and install it — the package compiles Spoke from source, so the GPU build always matches your driver:
+
+```sh
+paru -S spoke-cuda     # NVIDIA GPU
+paru -S spoke-vulkan   # any GPU (AMD/Intel/NVIDIA)
+paru -S spoke-cpu      # no GPU
+```
+
+(`yay` works too; use whichever AUR helper you have.) The `PKGBUILD`s live in [`packaging/aur/`](packaging/aur).
+
+### Build from source
+
+See [BUILD.md](BUILD.md). One command per platform once the toolchain is installed — the build produces a normal installer (`.dmg`, `.deb`, `.rpm`, `.AppImage`, `.msi`, or `.exe`). Speech models are downloaded in-app.
 
 ## In action
 
@@ -56,7 +70,7 @@ The bubble can be minimized into the system tray. The tray icon mirrors the bubb
 
 Right-click the tray icon for a context menu: restore the bubble, copy recent transcriptions, change the main settings (mode, model, trigger, output, language, audio saving), and quit.
 
-Prefer the tray without the bubble entirely? A dedicated **tray-only build** compiles the window out — see [BUILD.md](BUILD.md#tray-only-build-no-bubble-window).
+Prefer the tray without the bubble entirely? Pick **Start in the tray** during onboarding (or set `start_minimized = true` in `spoke.toml`) and Spoke launches straight into the tray with no bubble on screen — everything stays reachable from the tray menu, and **Show Spoke** brings the bubble back whenever you want it. Worth choosing on Wayland, where a floating always-on-top window can misbehave.
 
 ## Private by default
 

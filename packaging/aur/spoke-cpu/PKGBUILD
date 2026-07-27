@@ -1,0 +1,52 @@
+# Maintainer: Ravn <magnusrrc@gmail.com>
+#
+# Spoke — CPU build. Compiles whisper.cpp with no GPU backend; works on any
+# machine, no GPU or extra runtime needed. Slowest transcription.
+
+pkgname=spoke-cpu
+pkgver=0.1
+pkgrel=1
+pkgdesc="Push-to-talk voice dictation (whisper.cpp, CPU only)"
+arch=('x86_64')
+url="https://github.com/FlyvendeMus/Spoke"
+license=('custom')
+depends=('webkit2gtk-4.1' 'gtk3' 'libappindicator-gtk3' 'librsvg' 'openssl'
+         'alsa-lib' 'xdotool')
+makedepends=('cargo' 'cmake' 'git')
+provides=('spoke')
+conflicts=('spoke' 'spoke-vulkan' 'spoke-cuda')
+_tag="v${pkgver}"
+_srcdir="Spoke-${pkgver}"
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/${_tag}.tar.gz")
+sha256sums=('a0be6c1e05b783473e9981ce18d6e21ee7263e7067a9ddb37792d20a09f1a5af')
+
+prepare() {
+  cd "$_srcdir/src-tauri"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_srcdir/src-tauri"
+  export CARGO_TARGET_DIR=target
+  cargo build --release --frozen --features platform-linux-cpu
+}
+
+package() {
+  cd "$_srcdir"
+  install -Dm755 src-tauri/target/release/spoke "$pkgdir/usr/bin/spoke"
+
+  install -Dm644 src-tauri/icons/32x32.png       "$pkgdir/usr/share/icons/hicolor/32x32/apps/spoke.png"
+  install -Dm644 src-tauri/icons/128x128.png     "$pkgdir/usr/share/icons/hicolor/128x128/apps/spoke.png"
+  install -Dm644 "src-tauri/icons/128x128@2x.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/spoke.png"
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/spoke.desktop" <<'EOF'
+[Desktop Entry]
+Name=Spoke
+Comment=Push-to-talk voice dictation
+Exec=spoke
+Icon=spoke
+Terminal=false
+Type=Application
+Categories=Utility;AudioVideo;
+EOF
+}
