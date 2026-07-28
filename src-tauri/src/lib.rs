@@ -510,39 +510,6 @@ fn set_window_bounds(app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
     }
 }
 
-/// Linux menu open/close: resize the window anchored to the bubble's corner.
-///
-/// Keeping the bubble fixed through a resize naively takes a resize plus a
-/// move, but any move request is validated by the WM against the workarea
-/// using whatever size it believes at that instant — closing the menu near a
-/// screen/monitor edge gets the position clamped (the still-menu-sized window
-/// wouldn't fit) and the bubble visibly walks. Setting the ICCCM win-gravity
-/// to the bubble's corner and sending a resize *only* removes the move
-/// entirely: the WM itself keeps that corner pinned. (Don't reach for gdk's
-/// move_resize instead — it resizes the X window behind GTK's back and the
-/// webview keeps painting only the old area.)
-#[tauri::command]
-fn set_window_size_anchored(app: AppHandle, w: f64, h: f64, gravity: String) {
-    #[cfg(target_os = "linux")]
-    if let Some(win) = app.get_webview_window("bubble") {
-        use gtk::prelude::*;
-        let win2 = win.clone();
-        let _ = win.run_on_main_thread(move || {
-            let Ok(gtk_win) = win2.gtk_window() else { return };
-            let g = match gravity.as_str() {
-                "nw" => gtk::gdk::Gravity::NorthWest,
-                "ne" => gtk::gdk::Gravity::NorthEast,
-                "sw" => gtk::gdk::Gravity::SouthWest,
-                _ => gtk::gdk::Gravity::SouthEast,
-            };
-            gtk_win.set_gravity(g);
-            gtk_win.resize(w as i32, h as i32);
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = (app, w, h, gravity);
-}
-
 #[tauri::command]
 fn nudge_repaint(app: AppHandle) {
     #[cfg(target_os = "linux")]
@@ -773,11 +740,17 @@ fn register_hotkey(app: &AppHandle, cfg: &Config) -> anyhow::Result<()> {
 
 /// WebKitGTK ≥ 2.50 enables "damage propagation" by default: instead of
 /// presenting a fully repainted frame, only the damaged rectangles are pushed
-/// to the windowing system. On a transparent window this is broken (at least
-/// on NVIDIA/XWayland): the damaged region's translucent pixels get blended
-/// OVER the previous frame instead of replacing it, so drop shadows re-draw
-/// on top of themselves and darken with every repaint until the next full
-/// redraw (~10 s) resets the cycle. Turn the feature off for our webview.
+/// to the windowing system. Ask for full frames instead — on a transparent
+/// window the partial ones compound this stack's buffer bug (translucent pixels
+/// blending over their own previous value), and the window is small enough that
+/// full-frame composites cost nothing.
+///
+/// It is not a cure: measured on NVIDIA/XWayland with the feature off, a
+/// repainted drop shadow still creeps toward opaque. The actual mitigation is
+/// keeping everything over the desktop opaque (see the Linux block in
+/// style.css). Two names are checked because the flag was renamed:
+/// `PropagateDamagingInformation` up to 2.48, `UseDamagingInformationForCompositing`
+/// from 2.50 — matching neither is why this used to be a silent no-op.
 ///
 /// The feature-list API (webkit 2.42+) postdates the webkit2gtk crate's
 /// bindings, so the C symbols are declared here directly; the library is
@@ -812,10 +785,13 @@ fn disable_damage_propagation(win: &tauri::WebviewWindow) {
             for i in 0..webkit_feature_list_get_length(list) {
                 let feature = webkit_feature_list_get(list, i);
                 let id = webkit_feature_get_identifier(feature);
-                if !id.is_null()
-                    && CStr::from_ptr(id).to_bytes() == b"PropagateDamagingInformation"
-                {
-                    webkit_settings_set_feature_enabled(settings_ptr.cast(), feature, 0);
+                if !id.is_null() {
+                    let bytes = CStr::from_ptr(id).to_bytes();
+                    if bytes == b"PropagateDamagingInformation"
+                        || bytes == b"UseDamagingInformationForCompositing"
+                    {
+                        webkit_settings_set_feature_enabled(settings_ptr.cast(), feature, 0);
+                    }
                 }
             }
             webkit_feature_list_unref(list);
@@ -868,6 +844,172 @@ fn clear_gtk_background(win: &tauri::WebviewWindow) {
             );
         }
     }
+    // The background colour alone only covers regions X itself fills. GTK still
+    // draws the toplevel's own theme background under the webview, which is
+    // opaque — that is the black rectangle that flashes when the window is
+    // mapped or grown for the menu, before WebKit's first frame for the new
+    // area arrives. app_paintable hands that draw to us, so punch the surface
+    // to fully transparent (operator SOURCE, not the default OVER) and let the
+    // webview paint over it.
+    gtk_win.connect_draw(|_, cr| {
+        cr.set_operator(gtk::cairo::Operator::Source);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+        let _ = cr.paint();
+        cr.set_operator(gtk::cairo::Operator::Over);
+        gtk::glib::Propagation::Proceed
+    });
+}
+
+/// Make the webview itself start out transparent rather than black.
+///
+/// `clear_gtk_background` only reaches the toplevel; WebKit draws into its own
+/// child GdkWindow, whose backing store starts as uninitialised (black) memory
+/// and is what shows through until the first frame for a newly mapped or newly
+/// grown area arrives.
+#[cfg(target_os = "linux")]
+fn clear_webview_background(win: &tauri::WebviewWindow) {
+    use gtk::glib::translate::ToGlibPtr;
+    let _ = win.with_webview(|webview| {
+        use gtk::prelude::*;
+        use webkit2gtk::WebViewExt;
+        let view = webview.inner();
+        view.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+        view.set_app_paintable(true);
+        if let Some(gdk_win) = view.window() {
+            let rgba = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0);
+            unsafe {
+                gtk::gdk::ffi::gdk_window_set_background_rgba(
+                    gdk_win.to_glib_none().0,
+                    rgba.to_glib_none().0,
+                );
+            }
+        }
+    });
+}
+
+/// The input region the bubble uses while visible — the area of the window
+/// that accepts clicks. The window is always menu-sized on Linux (resizing it
+/// is what used to flash black and fight the WM), so everything outside this
+/// rect has to be punched through to the desktop.
+#[cfg(target_os = "linux")]
+static INPUT_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+fn apply_input_rect(win: &tauri::WebviewWindow, rect: Option<(i32, i32, i32, i32)>) {
+    use gtk::prelude::*;
+    let Ok(gtk_win) = win.gtk_window() else { return };
+    let Some(gdk_win) = gtk_win.window() else { return };
+    let region = match rect {
+        Some((x, y, w, h)) => {
+            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h))
+        }
+        None => gtk::cairo::Region::create(),
+    };
+    gdk_win.input_shape_combine_region(&region, 0, 0);
+}
+
+/// Set which part of the bubble window accepts clicks (device pixels).
+#[tauri::command]
+fn set_input_region(app: AppHandle, x: i32, y: i32, w: i32, h: i32) {
+    #[cfg(target_os = "linux")]
+    {
+        *INPUT_RECT.lock().unwrap() = Some((x, y, w, h));
+        let hidden = app
+            .state::<Arc<SpokeState>>()
+            .bubble_hidden
+            .load(Ordering::SeqCst);
+        if let Some(win) = app.get_webview_window("bubble") {
+            if !hidden {
+                apply_input_rect(&win, Some((x, y, w, h)));
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, x, y, w, h);
+}
+
+/// Repaint clock: while set, the webview surface is reallocated every frame.
+#[cfg(target_os = "linux")]
+static REPAINT_CLOCK: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static REPAINT_CLOCK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Hand WebKit a clean buffer by resizing the *webview widget* by one pixel.
+///
+/// WebKitGTK never clears this transparent window's buffer between frames (see
+/// ARCHITECTURE.md), and a size change on the webview is the only operation
+/// measured to make it reallocate — `XClearArea`, an identical size request,
+/// `size_allocate` with the same rect, `queue_resize`, `queue_draw`,
+/// `set_background_color` and the damage feature flags all leave the stale
+/// buffer in place. Unlike a toplevel resize it never reaches the window
+/// manager, so there is no geometry change, no gravity dance and no flutter.
+///
+/// The extra pixel is added to the *height*, below the window's own height, so
+/// it is clipped away — and the UI is laid out against `#root`'s explicit pixel
+/// size rather than the viewport (see setRootSize in main.js), so the taller
+/// viewport can't shift anything.
+#[cfg(target_os = "linux")]
+fn bump_webview_surface(gtk_win: &gtk::ApplicationWindow, grow: bool) {
+    use gtk::prelude::*;
+    let Some(child) = gtk_win.children().first().cloned() else {
+        return;
+    };
+    // Allocate the child directly rather than going through set_size_request:
+    // a size *request* is a minimum, so GTK pushes it up into the toplevel and
+    // the window itself creeps a pixel taller every tick. An allocation stops
+    // at the widget.
+    let alloc = gtk_win.allocation();
+    let rect = gtk::Allocation::new(0, 0, alloc.width(), alloc.height() + i32::from(grow));
+    child.size_allocate(&rect);
+}
+
+/// Start/stop the per-frame surface bump. On while anything animates over
+/// transparent pixels — without it a moving element leaves its old pixels
+/// behind and a translucent one darkens toward opaque.
+#[tauri::command]
+fn set_repaint_clock(app: AppHandle, on: bool) {
+    repaint_clock(&app, on);
+}
+
+fn repaint_clock(app: &AppHandle, on: bool) {
+    #[cfg(target_os = "linux")]
+    {
+        REPAINT_CLOCK.store(on, Ordering::SeqCst);
+        if !on || REPAINT_CLOCK_RUNNING.swap(true, Ordering::SeqCst) {
+            return; // stopping, or a clock is already ticking
+        }
+        let Some(win) = app.get_webview_window("bubble") else {
+            REPAINT_CLOCK_RUNNING.store(false, Ordering::SeqCst);
+            return;
+        };
+        let win2 = win.clone();
+        let _ = win.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            let Ok(gtk_win) = win2.gtk_window() else {
+                REPAINT_CLOCK_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            };
+            let mut grow = false;
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+                if !REPAINT_CLOCK.load(Ordering::SeqCst) {
+                    // Leave the surface at its natural size on the way out.
+                    // Hand the natural allocation back.
+                    let alloc = gtk_win.allocation();
+                    if let Some(child) = gtk_win.children().first() {
+                        let rect = gtk::Allocation::new(0, 0, alloc.width(), alloc.height());
+                        child.size_allocate(&rect);
+                    }
+                    REPAINT_CLOCK_RUNNING.store(false, Ordering::SeqCst);
+                    return gtk::glib::ControlFlow::Break;
+                }
+                grow = !grow;
+                bump_webview_surface(&gtk_win, grow);
+                gtk::glib::ControlFlow::Continue
+            });
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, on);
 }
 
 /// Set a window's compositor opacity. Unlike hiding, this leaves the window
@@ -878,6 +1020,74 @@ fn set_window_opacity(win: &tauri::WebviewWindow, alpha: f64) {
     if let Ok(gtk_win) = win.gtk_window() {
         gtk_win.set_opacity(alpha);
     }
+}
+
+/// Show or hide the bubble.
+///
+/// On Linux "hidden" is mapped-at-zero-opacity and click-through rather than
+/// unmapped: WebKitGTK only renders into a mapped window, so an unmapped bubble
+/// has no frame to show when it comes back and the compositor puts its black
+/// backing store on screen until one arrives. Staying mapped keeps a live frame
+/// ready at all times, which is what makes showing it instant and flash-free.
+#[cfg(target_os = "linux")]
+fn set_bubble_visible(win: &tauri::WebviewWindow, visible: bool) {
+    set_window_opacity(win, if visible { 1.0 } else { 0.0 });
+    // An invisible window must not eat clicks meant for the desktop. The
+    // visible region comes from the UI (bubble corner while the menu is closed,
+    // the whole window while it is open) — see set_input_region.
+    let rect = if visible { *INPUT_RECT.lock().unwrap() } else { None };
+    apply_input_rect(win, rect);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_bubble_visible(win: &tauri::WebviewWindow, visible: bool) {
+    let _ = if visible { win.show() } else { win.hide() };
+}
+
+/// Put the bubble on screen. Idempotent: called from `bubble_painted`, from its
+/// watchdog, and from the tray.
+fn reveal_bubble(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("bubble") else {
+        return;
+    };
+    if app
+        .state::<Arc<SpokeState>>()
+        .bubble_hidden
+        .load(Ordering::SeqCst)
+    {
+        return; // tray mode — stay invisible
+    }
+    #[cfg(not(target_os = "linux"))]
+    set_bubble_visible(&win, true);
+
+    // Linux: a window at zero opacity is not composited, so its buffer holds
+    // whatever was last drawn into it — at boot, the uninitialised black it was
+    // created with. Turning the opacity up before WebKit has redrawn is exactly
+    // the black flash. So run the repaint clock first, let it land a frame or
+    // two, and only then make the window visible.
+    #[cfg(target_os = "linux")]
+    {
+        let _ = win.show();
+        repaint_clock(app, true);
+        let app2 = app.clone();
+        let win2 = win.clone();
+        let _ = win.run_on_main_thread(move || {
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
+                set_bubble_visible(&win2, true);
+                let app3 = app2.clone();
+                gtk::glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(300),
+                    move || repaint_clock(&app3, false),
+                );
+            });
+        });
+    }
+}
+
+/// Called by main.js once the bubble has drawn its first frame.
+#[tauri::command]
+fn bubble_painted(app: AppHandle) {
+    reveal_bubble(&app);
 }
 
 /// Reveal the onboarding card once it has painted (see the builder in `setup`).
@@ -967,10 +1177,12 @@ pub fn run() {
             nudge_repaint,
             minimize_to_tray,
             show_onboarding,
+            bubble_painted,
+            set_repaint_clock,
+            set_input_region,
             finish_onboarding,
             set_tray_state,
             set_window_bounds,
-            set_window_size_anchored,
             get_build_info,
             check_permissions,
             open_permission_settings,
@@ -1041,14 +1253,28 @@ pub fn run() {
                 use tauri::{WebviewUrl, WebviewWindowBuilder};
                 WebviewWindowBuilder::new(app, "bubble", WebviewUrl::default())
                     .title("Spoke")
-                    .inner_size(320.0, 320.0)
+                    // Linux keeps the window at menu size for its whole life
+                    // (see linuxLayout in main.js) — create it that way so boot
+                    // needs no resize at all. Must match MENU_W/MENU_H there.
+                    .inner_size(
+                        if cfg!(target_os = "linux") { 340.0 } else { 320.0 },
+                        if cfg!(target_os = "linux") { 480.0 } else { 320.0 },
+                    )
                     .resizable(false)
                     .decorations(false)
                     .transparent(true)
                     .always_on_top(true)
                     .skip_taskbar(true)
                     .shadow(false)
-                    .visible(show_bubble_at_boot)
+                    // Linux never maps this visible: a transparent undecorated
+                    // window is on screen before WebKit has drawn anything, and
+                    // what the compositor shows meanwhile is the webview's
+                    // uninitialised backing store — a solid black rectangle for
+                    // ~450 ms. It is revealed by `bubble_painted` (or its
+                    // watchdog) once the first frame is up. See also
+                    // set_bubble_visible: on Linux hidden means mapped and
+                    // transparent, never unmapped.
+                    .visible(!cfg!(target_os = "linux") && show_bubble_at_boot)
                     .focused(false)
                     .build()?;
             }
@@ -1072,11 +1298,31 @@ pub fn run() {
                     enable_console_logging(&win);
                     let _ = win.set_resizable(true);
                     clear_gtk_background(&win);
+                    clear_webview_background(&win);
+                    // Map it straight away, but fully transparent and
+                    // click-through: WebKitGTK only paints into a mapped
+                    // window, so this is what lets the first frame exist
+                    // before anything is on screen. Opacity first (mapping at
+                    // full opacity is the flash we are avoiding), then the
+                    // click-through, which needs a realized GdkWindow.
+                    set_window_opacity(&win, 0.0);
+                    let _ = win.show();
+                    apply_input_rect(&win, None);
                 }
 
                 // Keep the bubble visible when the user switches Spaces on macOS.
                 #[cfg(target_os = "macos")]
                 let _ = win.set_visible_on_all_workspaces(true);
+            }
+
+            // Reveal the bubble even if `bubble_painted` never arrives (a JS
+            // error must not leave the user with no bubble at all).
+            if show_bubble_at_boot {
+                let watchdog = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(2500));
+                    reveal_bubble(&watchdog);
+                });
             }
 
             // Fresh install: open the onboarding card centered on screen. It walks
@@ -1121,6 +1367,7 @@ pub fn run() {
                         enable_console_logging(&win);
                         let _ = win.set_resizable(true);
                         clear_gtk_background(&win);
+                        clear_webview_background(&win);
                         set_window_opacity(&win, 0.0);
                         let _ = win.show();
                     }
@@ -1729,17 +1976,10 @@ fn restore_from_tray(app: &AppHandle) {
         .bubble_hidden
         .store(false, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window("bubble") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        // A bubble that booted straight into tray mode has never been mapped,
-        // and WebKitGTK doesn't always present a first frame for a webview that
-        // was created hidden. Bounce the size by a pixel to force one; the
-        // bubble re-applies its own geometry from JS on the next frame anyway.
         #[cfg(target_os = "linux")]
-        if let Ok(size) = win.outer_size() {
-            let _ = win.set_size(tauri::PhysicalSize::new(size.width + 1, size.height));
-            let _ = win.set_size(size);
-        }
+        let _ = win.show();
+        set_bubble_visible(&win, true);
+        let _ = win.set_focus();
     }
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Some(icon) = app.default_window_icon().cloned() {
@@ -1758,8 +1998,13 @@ fn hide_to_tray(app: &AppHandle) {
         .bubble_hidden
         .store(true, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window("bubble") {
-        let _ = win.hide();
+        set_bubble_visible(&win, false);
     }
+    // The Linux bubble stays mapped while hidden, so `document.hidden` never
+    // fires and the blob would keep animating into an invisible window. Tell
+    // the UI directly; it also starts pushing state colours to the tray, which
+    // hiding from the tray menu (rather than the minimize pill) used to skip.
+    let _ = app.emit("spoke:minimized", ());
     rebuild_tray_menu(app);
 }
 
@@ -1798,9 +2043,12 @@ fn finish_onboarding(app: AppHandle) -> Result<(), String> {
     }
     if let Some(win) = app.get_webview_window("bubble") {
         if cfg.ui.start_minimized {
-            let _ = win.hide();
+            set_bubble_visible(&win, false);
+            let _ = app.emit("spoke:minimized", ());
         } else {
+            #[cfg(target_os = "linux")]
             let _ = win.show();
+            set_bubble_visible(&win, true);
             let _ = win.set_focus();
         }
     }

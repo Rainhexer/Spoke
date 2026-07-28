@@ -29,7 +29,11 @@ body {
 }
 
 /* Bubble anchored bottom-right of the (transparent) window; the orbit and
-   sub-card position themselves relative to the window's bottom-right corner. */
+   sub-card position themselves relative to #root's bottom-right corner.
+   Everything inside is absolutely positioned against #root rather than the
+   viewport, because on Linux the viewport is deliberately a pixel taller than
+   the window every other frame (the repaint clock, see set_repaint_clock in
+   lib.rs) — JS pins #root to the window's exact size via setRootSize. */
 #root {
   position: fixed;
   inset: 0;
@@ -48,7 +52,7 @@ body {
 /* Centered horizontally on the bubble, floating just above it. Only shown
    while the menu is open (JS toggles .hidden). */
 #minimize {
-  position: fixed;
+  position: absolute;
   right: 27px; /* (16 + bubble/2) - width/2  →  40 - 13 */
   bottom: 72px; /* 16 + bubble(48) + 8 gap */
   width: 26px;
@@ -80,7 +84,7 @@ body {
 /* The button itself is invisible; the mosaic blob canvas is the whole visual.
    No background/overflow clipping — the canvas alpha defines the shape. */
 #bubble {
-  position: fixed;
+  position: absolute;
   right: 16px;
   bottom: 16px;
   width: var(--bubble);
@@ -128,7 +132,7 @@ body {
    carries --cx/--cy: the vector back to the main bubble's centre, used to
    collapse it into the bubble when the ring is closed. */
 .orbit-b {
-  position: fixed;
+  position: absolute;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: radial-gradient(circle at 32% 28%, #17171d 0%, #0c0c11 58%, #08080a 100%);
@@ -282,7 +286,7 @@ body {
    anchor corner, see CATS in main.js) so the category bubbles stay visible
    and clickable while a card is open — tap another bubble to switch section. */
 #subcard {
-  position: fixed;
+  position: absolute;
   right: 12px;
   bottom: 208px;
   width: 316px;
@@ -535,7 +539,7 @@ body {
 
 /* ---- Toast ---- */
 #toast {
-  position: fixed;
+  position: absolute;
   right: 24px;
   bottom: 96px;
   max-width: 260px;
@@ -655,47 +659,90 @@ body {
 }
 
 /* ---- Linux compositing workarounds ---- */
-/* WebKitGTK on a transparent window blends repaints over the stale buffer
-   instead of replacing it: any translucent pixel that is repainted (moving
-   elements, opacity fades, shadow changes) stacks and trails; a clean buffer
-   arrives only with a window resize. So on Linux menu state changes are
-   instant — no transitions over transparent areas — and JS follows each one
-   with a single 1px buffer-swap resize (nudgeOnce in main.js). Static
-   translucency (resting shadows) is safe: it's painted exactly once per
-   swap. Hover feedback is limited to opaque pixels (border color, inner
-   scale) — a shadow change would repaint translucent pixels over themselves
-   and darken. */
+/* WebKitGTK never clears this transparent window's buffer between frames: each
+   repaint is blended OVER what is already there. Two consequences drive
+   everything below.
+   1. A translucent pixel repainted in place blends with itself and creeps
+      toward opaque — a drop shadow darkens frame by frame until WebKit's
+      periodic full redraw (~10 s) resets it, then darkens again.
+   2. A pixel a moving element vacates is never repainted, so the old frame
+      stays on screen — motion trails.
+   A size change on the webview widget is the only operation that hands it a
+   fresh buffer (XClearArea, set_background_color, queue_draw, size_allocate,
+   queue_resize, hide/show and the damage-propagation feature flags were all
+   measured and none of them clear it). Rust does exactly that every frame while
+   anything is animating — the repaint clock, see set_repaint_clock in lib.rs —
+   which is what lets the transitions below run at all.
+   Belt and braces though: the clock only covers *motion*. A translucent pixel
+   that just sits there, repainted in place between clock runs, still creeps
+   toward opaque — so nothing outside the opaque sub-card is translucent. */
+
+/* No shadow, glow or partial opacity anywhere that sits over the desktop —
+   all of it is translucent, so all of it creeps toward black. The floating
+   pieces carry opaque borders instead. Translucency *inside* #subcard is fine:
+   the card's own background is opaque, so those pixels end up opaque too. */
 html.linux .orbit-b,
-html.linux #orbit.closed .orbit-b,
-html.linux #subcard,
-html.linux #toast {
-  transition: none;
-}
-/* Keep the resting shadow through hover/active states. */
 html.linux .orbit-b:hover,
-html.linux #orbit.dimmed .orbit-b.active {
-  box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+html.linux #orbit.dimmed .orbit-b,
+html.linux #orbit.dimmed .orbit-b.active,
+html.linux #minimize,
+html.linux #toast,
+html.linux .ob-warn {
+  box-shadow: none;
 }
-/* Scaling whole bubbles would smear their edges across transparent pixels;
-   opacity is fine — the dim toggle is a discrete change followed by a swap. */
+html.linux #subcard {
+  box-shadow: none;
+  border-color: #34343e;
+}
+/* The blob's halo is drawn into the canvas as an opaque rim instead (see
+   drawMosaic) — a CSS drop-shadow is exactly the translucent-pixel case. */
+html.linux #ring {
+  filter: none;
+}
+html.linux #bubble,
+html.linux #bubble:hover,
+html.linux #bubble.recording,
+html.linux #bubble.processing,
+html.linux #bubble.error,
+html.linux #minimize,
+html.linux #minimize:hover {
+  opacity: 1;
+}
+/* Dim the inactive category bubbles by colour rather than opacity, and hold
+   them at full size — scaling smears their edges across transparent pixels. */
+/* Dim by colour, not opacity — a half-transparent bubble over the desktop is
+   the one thing the repaint clock can't save. Scale is fine: the clock is
+   running for the transition that carries it. */
 html.linux #orbit.dimmed .orbit-b {
-  transform: none;
+  opacity: 1;
+  background: radial-gradient(circle at 32% 28%, #101015 0%, #08080c 58%, #06060a 100%);
+  border-color: #1b1b21;
+}
+html.linux #orbit.dimmed .orbit-b .ob-value {
+  color: #6e6e78;
+}
+html.linux #orbit.dimmed .orbit-b .ob-label {
+  color: #57575f;
+}
+html.linux #orbit.dimmed .orbit-b.active {
+  background: radial-gradient(circle at 32% 28%, #17171d 0%, #0c0c11 58%, #08080a 100%);
+  border-color: var(--accent);
+}
+html.linux #orbit.dimmed .orbit-b.active .ob-value {
+  color: var(--text);
+}
+html.linux #orbit.dimmed .orbit-b.active .ob-label {
+  color: var(--muted);
 }
 /* Animated glows repaint translucent pixels continuously. */
 html.linux .ob-warn,
 html.linux .warn-bar {
   animation: none;
 }
-/* Scrolling the card body repaints the card region each tick, and a
-   translucent box-shadow blended over itself darkens with every repaint —
-   so the card carries a border instead of a shadow. JS swaps the buffer
-   once scrolling settles to clear any residue (see the scroll listener in
-   main.js). */
-html.linux #subcard {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  border-color: #34343e;
+/* The warning badge sits half outside its bubble, over the desktop: give it an
+   opaque ring so its edge doesn't bleed. */
+html.linux .ob-warn {
+  border: 1px solid #6b4a08;
 }
 
 /* ---- Flipped anchoring ---- */

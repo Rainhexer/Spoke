@@ -150,14 +150,16 @@ function renderStartup(root) {
   });
   root.appendChild(grid);
 
-  // Wayland can't place or pin a floating window, so the bubble drifts, loses
-  // always-on-top, or renders with artifacts there. Tray mode has none of that.
+  // Wayland itself can't place or pin a floating window, so the bubble runs
+  // through XWayland instead. That is stable now, but WebKitGTK's transparent
+  // window buffer forces a flatter look — worth saying once, up front, rather
+  // than leaving people to wonder why Linux doesn't match the screenshots.
   if (buildInfo && buildInfo.wayland) {
     root.appendChild(
       el(
         "div",
-        "ob-note warn",
-        "<b>Wayland detected.</b> The floating bubble can be unstable on Wayland — it may ignore its position, drop out of always-on-top, or flicker. Tray mode avoids all of it; you can still open the bubble from the tray when you need it."
+        "ob-note",
+        "<b>Wayland session.</b>The bubble runs through XWayland so it can hold its position and stay on top. WebKitGTK never clears a transparent window's buffer, which can cause ghosting. So the Linux bubble disables drop shadows and glow to keep a fixed outline. It is flatter than on macOS or Windows, but has no ghosting. Tray mode is recommended if you'd rather not deal with visual glitches."
       )
     );
   }

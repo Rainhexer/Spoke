@@ -177,39 +177,105 @@ back to *Auto*.
   forced to `wayland`, a 1 px "repaint nudge" resize forces the compositor to
   present panel updates (no-op on X11).
 - **Linux transparent-window repaints don't erase** (all WebKitGTK modes on
-  at least NVIDIA): repaints blend OVER the stale buffer instead of replacing
-  it, so translucent pixels (drop shadows, fading elements) stack darker each
-  frame and moving elements leave trails; only a window resize swaps in a
-  clean buffer. Root cause (found later): WebKitGTK ≥ 2.50 ships the
-  "damage propagation" feature (`PropagateDamagingInformation`) enabled by
-  default — only damaged rectangles get presented, and on a transparent
-  window their translucent pixels blend over the previous frame instead of
-  replacing it, until the next full redraw resets the cycle.
-  `disable_damage_propagation()` in lib.rs turns the feature off through the
-  WebKitSettings feature-list C API (called over FFI — the webkit2gtk crate's
-  bindings predate it). Countermeasure layer (Linux-gated): menu transitions are disabled
-  in CSS (`html.linux` block — state changes are instant, hover feedback
-  avoids shadow changes), and every discrete menu change is followed by one
-  1px gravity-anchored "buffer swap" resize (`nudgeOnce`/`presentFrame` in
-  main.js); the close shrink is immediate. Card scrolling would repaint the
-  card's translucent shadow every tick, so on Linux the card uses a border
-  instead and a debounced buffer swap runs when scrolling settles. The
-  menu-open resize used to flash black (X fills exposed regions with the
-  window background before WebKit paints); fixed by `set_app_paintable` plus
-  a transparent X background set through `gdk_window_set_background_rgba`
-  (via ffi — the rust binding is gated). Don't run a per-frame resize loop
-  instead — it jiggles visibly and fights the WM's drag grab. Don't set
-  `WEBKIT_DISABLE_COMPOSITING_MODE` / `WEBKIT_DISABLE_DMABUF_RENDERER` — they
-  don't fix it and add their own artifacts. The window is also made resizable
-  at runtime on Linux: GTK snaps non-resizable windows back to the webview's
-  ~200×200 natural size, overriding the 80×80 bubble size.
-- **Linux window resize (`set_window_size_anchored`)**: menu open/close must
-  keep the bubble's screen position fixed. A resize+move pair gets the move
-  validated by the WM against the *old* size, so near screen/monitor edges
-  KWin clamps it and the bubble walks. Instead the command sets ICCCM
-  win-gravity to the bubble's corner (from the flip state) and sends a
-  resize only — the WM keeps that corner pinned. Never use gdk
-  `move_resize` here: it resizes the X window behind GTK's back and the
+  at least NVIDIA): the window's buffer is never cleared between frames, every
+  repaint is composited source-over onto what is already there. Two
+  consequences: a translucent pixel repainted in place blends with itself and
+  creeps toward opaque (a drop shadow darkens frame by frame until WebKit's
+  periodic full redraw, ~10 s, resets it), and pixels a moving element vacates
+  are never repainted, so the old frame stays on screen as a trail.
+
+  Measured against a repainting test page, reading the window's own ARGB
+  buffer with `XGetImage`: shadow alpha climbed 37 → 152 over 12 s, and an
+  opaque box sliding across the window smeared over its whole path. None of
+  `WEBKIT_DISABLE_DMABUF_RENDERER`, `WEBKIT_DISABLE_COMPOSITING_MODE`,
+  `LIBGL_ALWAYS_SOFTWARE`, layer promotion (`will-change`),
+  `webkit_web_view_set_background_color`, `gtk_widget_queue_draw`,
+  `XClearArea`, `size_allocate` with an unchanged rect, an unchanged
+  `set_size_request`, webview hide/show, or the damage-propagation feature
+  flags changed either number.
+
+  **What does clear it is a size change on the webview widget.** That is the
+  repaint clock: `set_repaint_clock` (lib.rs) runs a 60 Hz GTK timeout that
+  allocates the webview one pixel taller every other frame, and both numbers
+  drop to their clean values and stay there. Use `size_allocate`, not
+  `set_size_request` — a size request is a *minimum*, so GTK propagates it up
+  and the toplevel creeps a pixel taller every tick. Unlike a toplevel resize
+  this never reaches the window manager: no geometry change, no gravity dance,
+  no flutter, nothing to fight a drag grab.
+
+  main.js runs the clock while anything is animating — `startRepaint()` at the
+  top of every menu transition, `stopRepaintSoon()` (900 ms tail, so the CSS
+  transition the change started is fully covered) plus pointer/scroll
+  keep-alives while the menu is open. That is what lets the menu's open/close
+  animation, hover feedback and card transitions run on Linux at all.
+
+  The clock only covers *motion*, though. Between runs, a translucent pixel
+  repainted in place still creeps toward opaque — so the second half of the fix
+  stands: **everything over the desktop is opaque.** No shadows, glows or
+  partial opacity outside `#subcard` (translucency *inside* the card is fine,
+  its background is opaque), enforced by the `html.linux` block in style.css;
+  inactive orbit bubbles dim by colour rather than opacity. The bubble follows
+  the same rule in canvas — `shapeR()` returns a fixed radius on Linux so the
+  idle silhouette never moves (interior tiles still animate; they land on the
+  blob's opaque fill), the press/pop squish is off, and the CSS drop-shadow
+  halo is replaced by an opaque two-tone rim stroked into the canvas. macOS and
+  Windows keep the full shadowed design; every one of these rules is
+  `html.linux`- or `IS_LINUX`-gated.
+
+  Because the clock makes the viewport a pixel taller than the window every
+  other frame, **nothing may be laid out against the viewport** — everything is
+  absolutely positioned inside `#root`, which `setRootSize()` pins to the
+  window's exact logical size.
+
+  `disable_damage_propagation()` in lib.rs additionally asks WebKit for full
+  frames rather than damaged rects, through the WebKitSettings feature-list C
+  API (called over FFI — the webkit2gtk crate's bindings predate it). It is
+  insurance, not the cure; note the flag was renamed
+  (`PropagateDamagingInformation` ≤ 2.48, `UseDamagingInformationForCompositing`
+  ≥ 2.50) and matching only the old name made this a silent no-op for a while.
+
+  Don't set `WEBKIT_DISABLE_COMPOSITING_MODE` — it doesn't fix anything and adds
+  its own artifacts. The window is also made resizable at runtime on Linux: GTK
+  snaps non-resizable windows back to the webview's ~200×200 natural size.
+- **Linux keeps the bubble window at one size for its whole life.** It is
+  created menu-sized (340×480, matching `MENU_W`/`MENU_H` in main.js) and never
+  resized; opening the menu only changes what is drawn. Growing the window on
+  open is what used to put a black rectangle on screen for a frame — the newly
+  exposed area is mapped before WebKit has painted it — and what forced the
+  gravity-anchored resize (a plain move gets clamped by the WM near a screen
+  edge, walking the bubble). Click-through comes from an input region instead:
+  `set_input_region` (lib.rs) shapes the window to the bubble's corner box while
+  the menu is closed and to the whole window while it is open, and to nothing
+  at all while the bubble is hidden. `linuxLayout()` in main.js therefore only
+  ever *moves* the window, and only when a flip changes which corner the bubble
+  sits in.
+- **Linux black flash on reveal**: a transparent undecorated window is on
+  screen before WebKit has drawn anything, and what the compositor shows
+  meanwhile is the webview's uninitialised backing store — a solid black
+  rectangle for ~450 ms at startup. The bubble window is therefore never mapped
+  visible on Linux: it is mapped at zero opacity with an empty input region
+  (`set_bubble_visible`), and revealed by the `bubble_painted` command that
+  main.js fires after its first canvas frame (with a 2.5 s watchdog so a JS
+  error can't leave the user with no bubble). "Hidden to tray" uses the same
+  zero-opacity state rather than `hide()`: WebKitGTK only renders into a mapped
+  window, so an unmapped bubble has no frame ready when it comes back.
+
+  A zero-opacity window isn't composited either, so its buffer still holds
+  whatever was last drawn — at boot, the black it was created with. Raising the
+  opacity before WebKit has redrawn *is* the flash. So `reveal_bubble` starts
+  the repaint clock first, waits 60 ms for a frame to land, and only then turns
+  the opacity up. The
+  toplevel additionally gets `set_app_paintable` plus a transparent X
+  background (`gdk_window_set_background_rgba` via ffi — the rust binding is
+  gated) and a `draw` handler that clears with cairo operator SOURCE, and the
+  webview's own GdkWindow gets the same treatment.
+- **Linux window moves**: the window never resizes (above), so a flip is the
+  only thing that moves it, and the move must keep the bubble on the same
+  screen pixel. If a resize is ever reintroduced here, note the trap it used to
+  hit: a resize+move pair gets the move validated by the WM against the *old*
+  size, so near screen/monitor edges KWin clamps it and the bubble walks — the
+  old `set_window_size_anchored` worked around that with ICCCM win-gravity.
+  Never use gdk `move_resize`: it resizes the X window behind GTK's back and the
   webview keeps painting only the old area.
 - **Linux/ALSA**: device enumeration is filtered (no `hw:`/`dmix:` pseudo
   devices) and runs on a timeout thread, since misconfigured backends can

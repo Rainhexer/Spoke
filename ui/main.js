@@ -282,10 +282,8 @@ async function monitorBounds() {
   return { x: 0, y: 0, w: window.screen.width, h: window.screen.height };
 }
 
-// Apply window size + position together (boot placement; menu open/close on
-// non-Linux). On Linux this goes through one Rust command so both requests
-// drain in the same event-loop iteration; menu open/close on Linux uses
-// set_window_size_anchored instead (see resizeAndReposition).
+// Apply window size + position together. On Linux this goes through one Rust
+// command so both requests drain in the same event-loop iteration.
 async function applyBounds(x, y, w, h) {
   if (IS_LINUX) {
     await invoke("set_window_bounds", { x, y, w, h });
@@ -295,49 +293,69 @@ async function applyBounds(x, y, w, h) {
   }
 }
 
-// Linux: WebKitGTK blends every repaint OVER the transparent window's stale
-// buffer instead of replacing it — anything translucent that gets repainted
-// (moving elements, fading opacity, changing shadows) stacks and trails. A
-// fresh buffer arrives only on a window resize. So on Linux the menu's
-// transitions are disabled in CSS (state changes are instant; see the
-// html.linux block in style.css) and every discrete change is followed by
-// exactly one 1px gravity-anchored resize: the buffer is replaced with a
-// single clean render of the new state. The flutter lands on the window's
-// far, fully transparent edge; the bubble corner stays pinned by the WM.
-let nudgeParity = false;
-function nudgeOnce() {
-  if (!IS_LINUX || menuState === "closed") return;
-  nudgeParity = !nudgeParity;
-  const gravity = (flipY ? "n" : "s") + (flipX ? "w" : "e");
-  invoke("set_window_size_anchored", {
-    w: MENU_W + (nudgeParity ? 1 : 0),
-    h: MENU_H,
-    gravity,
-  }).catch(() => {});
+// Linux: WebKitGTK never clears this transparent window's buffer — every
+// repaint is composited OVER what is already there, so a moving element leaves
+// its old pixels behind and a translucent one darkens toward opaque. The one
+// operation that hands over a clean buffer is a size change on the webview
+// widget, which Rust can do every frame without the window itself moving (see
+// set_repaint_clock in lib.rs). So: run that clock for as long as anything is
+// animating, and everything — transitions included — renders normally.
+//
+// The clock keeps running for a beat after the last change: CSS transitions
+// outlive the call that started them, and the final frame has to land on a
+// clean buffer too.
+const REPAINT_TAIL_MS = 900;
+let repaintOff = null;
+let repaintOn = false;
+
+function startRepaint() {
+  if (!IS_LINUX) return;
+  clearTimeout(repaintOff);
+  if (!repaintOn) {
+    repaintOn = true;
+    invoke("set_repaint_clock", { on: true }).catch(() => {});
+  }
 }
 
-// Present the current frame after a discrete menu change: X11 needs the
-// buffer-swap resize above; a forced-Wayland backend needs the Rust-side
-// repaint nudge (no-op elsewhere).
+function stopRepaintSoon(ms = REPAINT_TAIL_MS) {
+  if (!IS_LINUX) return;
+  clearTimeout(repaintOff);
+  repaintOff = setTimeout(() => {
+    repaintOn = false;
+    invoke("set_repaint_clock", { on: false }).catch(() => {});
+  }, ms);
+}
+
+// Present the current frame after a menu change: hold the clock over the
+// transition that the change kicks off. A forced-Wayland backend also needs
+// the Rust-side repaint nudge (no-op elsewhere).
 function presentFrame() {
-  nudgeOnce();
+  startRepaint();
+  stopRepaintSoon();
   invoke("nudge_repaint");
 }
 
-// Scrolling a card repaints its region every tick; any translucent pixels in
-// it accumulate (see nudgeOnce above). Swap the buffer once scrolling
-// settles. Capture-phase on #subcard because scroll doesn't bubble and the
-// scrolling .card-body is rebuilt on every render.
+// Hovering, scrolling and the marquee all repaint while the menu just sits
+// there, so keep the clock alive on any pointer activity over the menu.
 if (IS_LINUX) {
-  let scrollNudgeTimer = null;
-  subcard.addEventListener(
-    "scroll",
-    () => {
-      clearTimeout(scrollNudgeTimer);
-      scrollNudgeTimer = setTimeout(nudgeOnce, 150);
-    },
-    true
-  );
+  const keepAlive = () => {
+    if (menuState === "closed") return;
+    startRepaint();
+    stopRepaintSoon();
+  };
+  root.addEventListener("pointermove", keepAlive, true);
+  root.addEventListener("pointerdown", keepAlive, true);
+  subcard.addEventListener("scroll", keepAlive, true);
+}
+
+// The repaint clock makes the webview 1px taller than the window every other
+// frame. Nothing may be laid out against the viewport, or it would jitter by a
+// pixel — so #root is pinned to the window's exact logical size and everything
+// inside anchors to it (see the `position: absolute` children in style.css).
+function setRootSize(w, h) {
+  if (!IS_LINUX) return;
+  root.style.width = w + "px";
+  root.style.height = h + "px";
 }
 
 /// Resize while keeping the bubble's screen position fixed. Recomputes the
@@ -349,7 +367,83 @@ if (IS_LINUX) {
 /// `keepFlip` skips the flip recompute — used when shrinking back to
 /// bubble-only size, where re-flipping mid-close would mirror the layout while
 /// the window is still menu-sized and make the bubble jump corners.
+// Which part of the window takes clicks. On Linux the window is always
+// menu-sized, so while the menu is closed everything but the bubble's own
+// corner has to be punched through to the desktop.
+async function applyInputRegion() {
+  if (!IS_LINUX) return;
+  let f = 1;
+  try { f = await appWindow.scaleFactor(); } catch (_) {}
+  const box =
+    menuState === "closed"
+      ? {
+          x: flipX ? 0 : MENU_W - BUBBLE_W,
+          y: flipY ? 0 : MENU_H - BUBBLE_H,
+          w: BUBBLE_W,
+          h: BUBBLE_H,
+        }
+      : { x: 0, y: 0, w: MENU_W, h: MENU_H };
+  invoke("set_input_region", {
+    x: Math.round(box.x * f),
+    y: Math.round(box.y * f),
+    w: Math.round(box.w * f),
+    h: Math.round(box.h * f),
+  }).catch(() => {});
+}
+
+/// Linux layout. The window never changes size — it is always menu-sized, and
+/// the bubble lives in whichever corner the flips put it in. Growing the window
+/// on menu-open is what used to show a black rectangle for a frame (the newly
+/// exposed area is on screen before WebKit has painted it) and what forced the
+/// gravity-anchored resize dance; clicks outside the bubble pass through via
+/// the input region instead. So this only ever moves the window — when a flip
+/// changes which corner the bubble sits in — and keeps the bubble on the same
+/// screen pixel while doing it.
+async function linuxLayout(initial = false, keepFlip = false) {
+  try {
+    setRootSize(MENU_W, MENU_H);
+    if (initial) {
+      // Bottom-right of the screen: the bubble sits MARGIN in from the corner,
+      // which puts the window's own corner there too.
+      await applyBounds(
+        window.screen.width - MARGIN - MENU_W,
+        window.screen.height - MARGIN - MENU_H,
+        MENU_W,
+        MENU_H
+      );
+      await applyInputRegion();
+      return;
+    }
+    if (!keepFlip) {
+      const factor = await appWindow.scaleFactor();
+      const pos = (await appWindow.outerPosition()).toLogical(factor);
+      // Bubble centre on screen under the current flips — the fixed point.
+      const bx = pos.x + (flipX ? BUBBLE_HALF : MENU_W - BUBBLE_HALF);
+      const by = pos.y + (flipY ? BUBBLE_HALF : MENU_H - BUBBLE_HALF);
+      const mon = await monitorBounds();
+      const nfx = bx + BUBBLE_HALF - MENU_W < mon.x;
+      const nfy = by + BUBBLE_HALF - MENU_H < mon.y;
+      if (nfx !== flipX || nfy !== flipY) {
+        flipX = nfx;
+        flipY = nfy;
+        root.classList.toggle("flip-x", flipX);
+        root.classList.toggle("flip-y", flipY);
+        buildOrbit();
+        // Move the window so the bubble stays on the pixel it was on.
+        await applyBounds(
+          flipX ? bx - BUBBLE_HALF : bx + BUBBLE_HALF - MENU_W,
+          flipY ? by - BUBBLE_HALF : by + BUBBLE_HALF - MENU_H,
+          MENU_W,
+          MENU_H
+        );
+      }
+    }
+    await applyInputRegion();
+  } catch (_) { /* best-effort */ }
+}
+
 async function resizeAndReposition(w, h, initial = false, keepFlip = false) {
+  if (IS_LINUX) return linuxLayout(initial, keepFlip);
   try {
     if (initial) {
       await applyBounds(
@@ -379,14 +473,6 @@ async function resizeAndReposition(w, h, initial = false, keepFlip = false) {
       buildOrbit();
     }
 
-    if (IS_LINUX) {
-      // Resize anchored to the bubble's corner via WM gravity — no move
-      // request, so the WM can't clamp the transient geometry and walk the
-      // bubble (see set_window_size_anchored in lib.rs).
-      const gravity = (flipY ? "n" : "s") + (flipX ? "w" : "e");
-      await invoke("set_window_size_anchored", { w, h, gravity });
-      return;
-    }
     const x = flipX ? bx - BUBBLE_HALF : bx + BUBBLE_HALF - w;
     const y = flipY ? by - BUBBLE_HALF : by + BUBBLE_HALF - h;
     await applyBounds(x, y, w, h);
@@ -522,6 +608,7 @@ function updateOrbitValues() {
 
 async function openRing() {
   clearTimeout(closeTimer); // cancel a pending post-animation shrink
+  startRepaint(); // clean buffers for the whole pop-out, not just its last frame
   Sfx.play("menuOpen");
   menuState = "ring";
   // Grow the window (and rebuild the orbit for the current flip direction)
@@ -577,6 +664,7 @@ function backToRing() {
 let closeTimer = null;
 
 function closeMenu() {
+  startRepaint(); // the fold-in has to land on clean buffers too
   if (capturing) endCapture();
   // Only when something was actually open — closeMenu() is also called
   // defensively (minimize, restore) where there is no ring to fold away.
@@ -588,17 +676,14 @@ function closeMenu() {
   minimize.classList.add("hidden");
   invoke("nudge_repaint");
   clearTimeout(closeTimer);
-  if (IS_LINUX) {
-    // Transitions are disabled on Linux, so the collapse is instant — shrink
-    // right away; the resize also discards any residue in the stale buffer.
-    resizeAndReposition(BUBBLE_W, BUBBLE_H, false, true);
-    return;
-  }
-  // Shrinking the window is what restores click-through around the bubble,
-  // but doing it immediately clips the collapse animation (0.45s spring +
-  // up to 150ms stagger). Wait for the fold to land, then shrink.
+  // Narrowing the clickable area to the bubble is what restores click-through
+  // around it (a window shrink off Linux, an input region on it), but doing it
+  // immediately clips the collapse animation (0.45s spring + up to 150ms
+  // stagger). Wait for the fold to land first.
   closeTimer = setTimeout(() => {
-    if (menuState === "closed") resizeAndReposition(BUBBLE_W, BUBBLE_H, false, true);
+    if (menuState !== "closed") return;
+    resizeAndReposition(BUBBLE_W, BUBBLE_H, false, true);
+    stopRepaintSoon(200);
   }, 650);
 }
 
@@ -1351,8 +1436,19 @@ function mosaicStep(dt) {
   phSt += shapeP.starSpeed   * dt;
 }
 
+// Radius the blob is frozen at on Linux — the largest baseR of any mode, so
+// switching state never moves the boundary either.
+const LINUX_R = 18.5;
+
 // Organic boundary radius at angle th.
 function shapeR(th) {
+  // Linux: hold the silhouette perfectly still. WebKitGTK never clears this
+  // window's buffer (see the Linux block in style.css), so the pixels a
+  // shrinking boundary vacates are never repainted and the previous outline
+  // stays on screen — a morphing blob smears a dark crust around itself. The
+  // interior tiles still animate: they land on the blob's opaque fill, which
+  // is repainted in full every frame.
+  if (IS_LINUX) return LINUX_R;
   const p = shapeP;
   const blob = Math.sin(th * 3 + phB) * 0.5
              + Math.sin(th * 5 - phB * 1.37 + 1.7) * 0.30
@@ -1398,8 +1494,11 @@ function drawMosaic(now) {
   const pop = popAge >= 0 && popAge < 1
     ? Math.exp(-popAge * 4.5) * Math.sin(popAge * 14)
     : 0;
-  const sx = 1 + press * 0.09 + pop * 0.08;
-  const sy = 1 - press * 0.13 + pop * 0.13;
+  // The press squish and the done-processing "spit" scale the silhouette, so
+  // they are off on Linux for the same reason shapeR() is frozen there; the
+  // ripples they trigger inside the blob still play.
+  const sx = IS_LINUX ? 1 : 1 + press * 0.09 + pop * 0.08;
+  const sy = IS_LINUX ? 1 : 1 - press * 0.13 + pop * 0.13;
   const pressAge = mosaicT - pressT;
   const blink = Math.pow(Math.max(0, Math.sin(mosaicT * 3.2)), 3);
 
@@ -1490,10 +1589,29 @@ function drawMosaic(now) {
   // Soft outline tracing the boundary — helps the silhouette read against
   // busy desktop backgrounds.
   const baseA = 0.34 + amber * blink * 0.45;
+  if (IS_LINUX) {
+    // Linux gets an opaque two-tone rim instead of the translucent outline and
+    // the CSS drop-shadow (#ring, style.css): a dark line to separate the blob
+    // from light desktops and a lighter one for dark desktops. Opaque pixels
+    // repaint to the same value every frame, so unlike a shadow they can't
+    // creep toward black.
+    mCtx.lineWidth = 2;
+    mCtx.strokeStyle = 'rgb(6,6,8)';
+    mCtx.stroke(path);
+    mCtx.lineWidth = 1;
+    mCtx.strokeStyle = `rgb(${(bbg[0] + (bfg[0] - bbg[0]) * baseA) | 0},${
+      (bbg[1] + (bfg[1] - bbg[1]) * baseA) | 0},${
+      (bbg[2] + (bfg[2] - bbg[2]) * baseA) | 0})`;
+    mCtx.stroke(path);
+    return;
+  }
   mCtx.lineWidth = 1;
   mCtx.strokeStyle = `rgba(${bfg[0] | 0},${bfg[1] | 0},${bfg[2] | 0},${baseA.toFixed(3)})`;
   mCtx.stroke(path);
 }
+
+// Set once the first blob frame is on the canvas; gates the reveal below.
+let painted = false;
 
 // Animation driver: always schedules the next frame, but skips the actual draw
 // when the window is hidden (occluded/minimized) and throttles to IDLE_INTERVAL
@@ -1501,7 +1619,10 @@ function drawMosaic(now) {
 // and the press spring run at full refresh so the morphing stays smooth.
 function tick(now) {
   requestAnimationFrame(tick);
-  if (document.hidden) return;
+  // Park while nothing is on screen — but always draw the very first frame:
+  // on Linux a hidden bubble is still mapped, and having a painted buffer
+  // ready is what makes the restore from the tray appear instantly.
+  if ((document.hidden || minimized) && painted) return;
   const settled = modeW.idle > 0.995 && errB < 0.005 &&
                   warnB < 0.005 && !warnActive &&
                   press < 0.01 && pressTarget === 0 &&
@@ -1509,6 +1630,13 @@ function tick(now) {
   if (settled && now - lastFrame < IDLE_INTERVAL) return;
   lastFrame = now;
   drawMosaic(now);
+  if (!painted) {
+    painted = true;
+    // The window is created invisible so the compositor never gets to show the
+    // webview's black backing store (see the builder in lib.rs). One more frame
+    // for the paint to reach the screen, then let Rust reveal it.
+    requestAnimationFrame(() => invoke("bubble_painted").catch(() => {}));
+  }
 }
 
 // ---- Events from Rust ---------------------------------------------------
@@ -1521,6 +1649,13 @@ listen("spoke:state", (e) => {
 // Tray-click restore: the bubble is visible again, so stop coloring the tray.
 listen("spoke:restored", () => {
   minimized = false;
+});
+
+// Hidden to the tray (from the tray menu as well as the pill). On Linux the
+// window stays mapped while hidden, so this — not `document.hidden` — is what
+// parks the blob animation while nothing is on screen.
+listen("spoke:minimized", () => {
+  minimized = true;
 });
 
 // Minimize pill: close the menu, seed the tray color, then hide to the tray.
@@ -1798,6 +1933,10 @@ async function init() {
     flash("Failed to load config: " + e);
   }
   Sfx.fromConfig(config);
+  // Mirror the boot-time visibility rule from lib.rs: booting into the tray (or
+  // into onboarding) leaves the bubble hidden, and on Linux hidden still means
+  // mapped — so park the blob animation until a restore says otherwise.
+  minimized = !(config?.ui?.onboarded && !config?.ui?.start_minimized);
   buildOrbit();
   await loadBuildInfo();
   updateOrbitValues();
@@ -1807,9 +1946,11 @@ async function init() {
   // rebuild); poll cheaply so warnings appear and clear without a restart.
   setInterval(checkPermissions, 15000);
   setInterval(refreshModelWarning, 15000);
+  // Window starts at 320×320; shrink to bubble-only size before the first
+  // frame — the reveal that frame triggers (see `painted`) must not catch the
+  // bubble sitting in the corner of an oversized window.
+  await resizeAndReposition(BUBBLE_W, BUBBLE_H, true);
   requestAnimationFrame(tick);
-  // Window starts at 320×320; shrink to bubble-only size immediately.
-  resizeAndReposition(BUBBLE_W, BUBBLE_H, true);
 }
 
 init();
