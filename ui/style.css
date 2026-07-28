@@ -713,6 +713,20 @@ html.linux #subcard {
   top: 16px;
 }
 
+/* The pill stays centered on the bubble and on the far side of it from the
+   menu, so a flipped Y axis puts it below the bubble instead of above. */
+#root.flip-x #minimize {
+  right: auto;
+  left: 27px;
+}
+#root.flip-y #minimize {
+  bottom: auto;
+  top: 72px;
+}
+#root.flip-y #minimize:hover {
+  transform: translateY(1px);
+}
+
 #root.flip-x #subcard {
   right: auto;
   left: 12px;

@@ -1280,7 +1280,11 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let cfg = app.state::<Arc<SpokeState>>().config_snapshot();
     let history = app.state::<Arc<SpokeState>>().history.lock().unwrap().clone();
 
-    let show = MenuItem::with_id(app, "show", "Show Spoke", true, None::<&str>)?;
+    // One toggle entry: it reads as the action it will perform, so it says
+    // "Show Spoke" only while the bubble is actually off screen.
+    let hidden = app.state::<Arc<SpokeState>>().bubble_hidden.load(Ordering::SeqCst);
+    let show_label = if hidden { "Show Spoke" } else { "Hide Spoke" };
+    let show = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Spoke", true, None::<&str>)?;
@@ -1571,7 +1575,11 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
     match id {
         "show" => {
-            restore_from_tray(app);
+            if app.state::<Arc<SpokeState>>().bubble_hidden.load(Ordering::SeqCst) {
+                restore_from_tray(app);
+            } else {
+                hide_to_tray(app);
+            }
             return;
         }
         "quit" => {
@@ -1740,17 +1748,24 @@ fn restore_from_tray(app: &AppHandle) {
     }
     // Tell the UI it's no longer minimized so it stops pushing tray colors.
     let _ = app.emit("spoke:restored", ());
+    // The tray entry is a toggle, so its label follows the bubble.
+    rebuild_tray_menu(app);
 }
 
 /// Hide every window; the app lives only in the tray until restored.
-#[tauri::command]
-fn minimize_to_tray(app: AppHandle) {
+fn hide_to_tray(app: &AppHandle) {
     app.state::<Arc<SpokeState>>()
         .bubble_hidden
         .store(true, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window("bubble") {
         let _ = win.hide();
     }
+    rebuild_tray_menu(app);
+}
+
+#[tauri::command]
+fn minimize_to_tray(app: AppHandle) {
+    hide_to_tray(&app);
 }
 
 /// Mark first-run onboarding as complete: flip the `onboarded` flag (which also
@@ -1766,6 +1781,12 @@ fn finish_onboarding(app: AppHandle) -> Result<(), String> {
     cfg.ui.onboarded = true;
     apply_config(&app, cfg.clone())?;
 
+    // Settle where the bubble ends up before the tray exists: the tray's
+    // show/hide entry labels itself from this flag when the menu is built.
+    state
+        .bubble_hidden
+        .store(cfg.ui.start_minimized, Ordering::SeqCst);
+
     // The tray was withheld while the card was up so onboarding was the only
     // thing on screen; bring it up now, before any tray state is applied.
     if let Err(e) = build_tray(&app) {
@@ -1775,9 +1796,6 @@ fn finish_onboarding(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("onboard") {
         let _ = win.close();
     }
-    state
-        .bubble_hidden
-        .store(cfg.ui.start_minimized, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window("bubble") {
         if cfg.ui.start_minimized {
             let _ = win.hide();
