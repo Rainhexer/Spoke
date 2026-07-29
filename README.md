@@ -26,18 +26,6 @@ Prefer tap-to-start / tap-to-stop? Switch to **Toggle** mode. Prefer the text on
 
 Pre-built binaries are available on the [Releases page](https://github.com/Rainhexer/Spoke/releases) — `.dmg` (macOS), `.deb`/`.rpm`/`.AppImage` (Linux), `.msi`/`.exe` (Windows).
 
-### Arch Linux (AUR)
-
-Pick the backend you want and install it — the package compiles Spoke from source, so the GPU build always matches your driver:
-
-```sh
-paru -S spoke-cuda     # NVIDIA GPU
-paru -S spoke-vulkan   # any GPU (AMD/Intel/NVIDIA)
-paru -S spoke-cpu      # no GPU
-```
-
-(`yay` works too; use whichever AUR helper you have.) The `PKGBUILD`s live in [`packaging/aur/`](packaging/aur).
-
 ### Build from source
 
 See [BUILD.md](BUILD.md). One command per platform once the toolchain is installed — the build produces a normal installer (`.dmg`, `.deb`, `.rpm`, `.AppImage`, `.msi`, or `.exe`). Speech models are downloaded in-app.
