@@ -508,6 +508,9 @@ fn set_window_bounds(app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
         let _ = win.set_size(tauri::LogicalSize::new(w, h));
         let _ = win.set_position(tauri::LogicalPosition::new(x, y));
     }
+    // A resize is one of the things that loses the input region (see
+    // apply_hit_shape); put it straight back rather than waiting for the UI.
+    refresh_hit_shape(&app);
 }
 
 #[tauri::command]
@@ -887,45 +890,201 @@ fn clear_webview_background(win: &tauri::WebviewWindow) {
     });
 }
 
-/// The input region the bubble uses while visible — the area of the window
-/// that accepts clicks. The window is always menu-sized on Linux (resizing it
-/// is what used to flash black and fight the WM), so everything outside this
-/// rect has to be punched through to the desktop.
-#[cfg(target_os = "linux")]
-static INPUT_RECT: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
-
-#[cfg(target_os = "linux")]
-fn apply_input_rect(win: &tauri::WebviewWindow, rect: Option<(i32, i32, i32, i32)>) {
-    use gtk::prelude::*;
-    let Ok(gtk_win) = win.gtk_window() else { return };
-    let Some(gdk_win) = gtk_win.window() else { return };
-    let region = match rect {
-        Some((x, y, w, h)) => {
-            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h))
-        }
-        None => gtk::cairo::Region::create(),
-    };
-    gdk_win.input_shape_combine_region(&region, 0, 0);
+/// The part of the bubble window that takes clicks, in physical pixels
+/// relative to the window's top-left: a rounded rect, `r` being the corner
+/// radius (0 = plain rect, w/2 = circle). Everything outside it is punched
+/// through to whatever is behind Spoke.
+///
+/// The window is always far bigger than what is drawn in it — menu-sized for
+/// its whole life on Linux, an 80px box around a 48px blob elsewhere — so
+/// without this the transparent part swallows every click that lands on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct HitShape {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    r: i32,
 }
 
-/// Set which part of the bubble window accepts clicks (device pixels).
-#[tauri::command]
-fn set_input_region(app: AppHandle, x: i32, y: i32, w: i32, h: i32) {
+impl HitShape {
+    /// Corner radius clamped to what the box can actually hold.
+    fn radius(&self) -> i32 {
+        self.r.clamp(0, (self.w / 2).min(self.h / 2))
+    }
+
+    /// Is this desktop point inside the shape, given the window's top-left?
+    /// Used by the cursor poll on macOS/Windows, which have no input region.
+    #[cfg(not(target_os = "linux"))]
+    fn contains(&self, win_x: f64, win_y: f64, px: f64, py: f64) -> bool {
+        let (x, y) = (win_x + self.x as f64, win_y + self.y as f64);
+        let (w, h) = (self.w as f64, self.h as f64);
+        if px < x || py < y || px >= x + w || py >= y + h {
+            return false;
+        }
+        let r = self.radius() as f64;
+        if r <= 0.0 {
+            return true;
+        }
+        // Inside the rounded rect iff within r of the un-rounded inner box.
+        let cx = px.clamp(x + r, x + w - r);
+        let cy = py.clamp(y + r, y + h - r);
+        (px - cx).powi(2) + (py - cy).powi(2) <= r * r
+    }
+
+    /// The shape as scanline rectangles — one row per line of the rounded
+    /// ends, one for the straight middle. What X11 wants for an input region.
     #[cfg(target_os = "linux")]
-    {
-        *INPUT_RECT.lock().unwrap() = Some((x, y, w, h));
-        let hidden = app
-            .state::<Arc<SpokeState>>()
-            .bubble_hidden
-            .load(Ordering::SeqCst);
-        if let Some(win) = app.get_webview_window("bubble") {
-            if !hidden {
-                apply_input_rect(&win, Some((x, y, w, h)));
+    fn rects(&self) -> Vec<(i32, i32, i32, i32)> {
+        let r = self.radius();
+        if r <= 0 {
+            return vec![(self.x, self.y, self.w, self.h)];
+        }
+        let mut out = vec![(self.x, self.y + r, self.w, self.h - 2 * r)];
+        for i in 0..r {
+            // Row centre, measured from the centre of the corner circle.
+            let dy = (r - i) as f64 - 0.5;
+            let dx = (((r * r) as f64) - dy * dy).max(0.0).sqrt();
+            let inset = r - dx.floor() as i32;
+            let w = self.w - 2 * inset;
+            if w <= 0 {
+                continue;
             }
+            out.push((self.x + inset, self.y + i, w, 1));
+            out.push((self.x + inset, self.y + self.h - 1 - i, w, 1));
+        }
+        out
+    }
+}
+
+static HIT_SHAPE: Mutex<Option<HitShape>> = Mutex::new(None);
+
+/// Hand GTK the bubble's input region; `None` makes the whole window
+/// click-through.
+///
+/// Set on the *widget*, not straight on the GdkWindow: GTK remembers a
+/// widget's region and re-applies it every time the window is realized or
+/// allocated, while one pushed onto the GdkWindow is dropped by the next
+/// resize or re-map. That drop is issue #6 — a bubble that booted into the
+/// tray was invisible but still blocking clicks in the middle of the screen,
+/// and only showing it, moving it and hiding it again (which re-applied the
+/// region with nothing left to clear it) got the clicks back.
+#[cfg(target_os = "linux")]
+fn apply_hit_shape(win: &tauri::WebviewWindow, shape: Option<HitShape>) {
+    use gtk::prelude::*;
+    let Ok(gtk_win) = win.gtk_window() else { return };
+    let region = gtk::cairo::Region::create();
+    if let Some(s) = shape {
+        for (x, y, w, h) in s.rects() {
+            let _ = region.union_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h));
         }
     }
+    gtk_win.input_shape_combine_region(Some(&region));
+    if let Some(gdk_win) = gtk_win.window() {
+        gdk_win.input_shape_combine_region(&region, 0, 0);
+    }
+}
+
+/// Re-apply the click-through region: the stored shape while the bubble is on
+/// screen, nothing at all while it lives in the tray — an invisible window
+/// must never eat a click.
+fn refresh_hit_shape(app: &AppHandle) {
+    let hidden = app
+        .state::<Arc<SpokeState>>()
+        .bubble_hidden
+        .load(Ordering::SeqCst);
+    let shape = if hidden {
+        None
+    } else {
+        *HIT_SHAPE.lock().unwrap()
+    };
+    #[cfg(target_os = "linux")]
+    if let Some(win) = app.get_webview_window("bubble") {
+        apply_hit_shape(&win, shape);
+    }
+    // macOS/Windows have no input region; the cursor poll picks the change up
+    // from HIT_SHAPE on its next tick.
     #[cfg(not(target_os = "linux"))]
-    let _ = (app, x, y, w, h);
+    let _ = shape;
+}
+
+/// Re-apply the region whenever GTK could have dropped it — see
+/// `apply_hit_shape`. Mapping and re-allocating the window both clear it.
+#[cfg(target_os = "linux")]
+fn watch_hit_shape(app: &AppHandle, win: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let Ok(gtk_win) = win.gtk_window() else { return };
+    let on_map = app.clone();
+    gtk_win.connect_map(move |_| refresh_hit_shape(&on_map));
+    let on_alloc = app.clone();
+    let last = std::cell::Cell::new((0, 0, 0, 0));
+    gtk_win.connect_size_allocate(move |_, alloc| {
+        // The repaint clock reallocates the webview child every frame; only a
+        // change to the toplevel's own geometry can lose the region.
+        let cur = (alloc.x(), alloc.y(), alloc.width(), alloc.height());
+        if last.replace(cur) != cur {
+            refresh_hit_shape(&on_alloc);
+        }
+    });
+}
+
+/// How often the cursor is sampled for the macOS/Windows click-through.
+#[cfg(not(target_os = "linux"))]
+const HIT_POLL_MS: u64 = 50;
+
+/// Click-through for the platforms that have no input region: neither macOS
+/// nor Windows can be told "these pixels aren't mine", so watch where the
+/// cursor is instead and flip the whole window between click-through and
+/// interactive as it enters and leaves the drawn area. It has to poll — a
+/// window that is ignoring the cursor receives no mouse events to react to.
+#[cfg(not(target_os = "linux"))]
+fn spawn_cursor_hit_test(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut ignoring = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(HIT_POLL_MS));
+            let Some(win) = app.get_webview_window("bubble") else {
+                continue;
+            };
+            // Hidden means genuinely unmapped here, so there is nothing to
+            // click through; leave the window interactive for its return.
+            let hidden = app
+                .state::<Arc<SpokeState>>()
+                .bubble_hidden
+                .load(Ordering::SeqCst);
+            let inside = hidden || cursor_over_bubble(&app, &win);
+            if ignoring == !inside {
+                continue;
+            }
+            ignoring = !inside;
+            let _ = win.set_ignore_cursor_events(ignoring);
+        }
+    });
+}
+
+/// Is the desktop cursor over the drawn part of the bubble? Anything unknown
+/// (no region yet, no cursor position) answers "yes": a window that takes
+/// clicks it shouldn't is a smaller failure than a bubble that can't be
+/// clicked at all.
+#[cfg(not(target_os = "linux"))]
+fn cursor_over_bubble(app: &AppHandle, win: &tauri::WebviewWindow) -> bool {
+    let Some(shape) = *HIT_SHAPE.lock().unwrap() else {
+        return true;
+    };
+    let (Ok(cursor), Ok(pos)) = (app.cursor_position(), win.outer_position()) else {
+        return true;
+    };
+    shape.contains(pos.x as f64, pos.y as f64, cursor.x, cursor.y)
+}
+
+/// Set which part of the bubble window accepts clicks (physical pixels,
+/// window-relative; `r` is the corner radius, so the closed bubble is a circle
+/// rather than a square with four dead corners).
+#[tauri::command]
+fn set_input_region(app: AppHandle, x: i32, y: i32, w: i32, h: i32, r: i32) {
+    *HIT_SHAPE.lock().unwrap() = Some(HitShape { x, y, w, h, r });
+    refresh_hit_shape(&app);
 }
 
 /// Repaint clock: while set, the webview surface is reallocated every frame.
@@ -1033,10 +1192,14 @@ fn set_window_opacity(win: &tauri::WebviewWindow, alpha: f64) {
 fn set_bubble_visible(win: &tauri::WebviewWindow, visible: bool) {
     set_window_opacity(win, if visible { 1.0 } else { 0.0 });
     // An invisible window must not eat clicks meant for the desktop. The
-    // visible region comes from the UI (bubble corner while the menu is closed,
-    // the whole window while it is open) — see set_input_region.
-    let rect = if visible { *INPUT_RECT.lock().unwrap() } else { None };
-    apply_input_rect(win, rect);
+    // clickable region comes from the UI (the bubble itself while the menu is
+    // closed, the whole window while it is open) — see set_input_region.
+    let shape = if visible {
+        *HIT_SHAPE.lock().unwrap()
+    } else {
+        None
+    };
+    apply_hit_shape(win, shape);
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1287,6 +1450,11 @@ pub fn run() {
                 // ignoring cursor events, making clicks pass through silently.
                 let _ = win.set_ignore_cursor_events(false);
 
+                // macOS/Windows: the only click-through they have is "the whole
+                // window", so a poll drives it off the cursor position.
+                #[cfg(not(target_os = "linux"))]
+                spawn_cursor_hit_test(&handle);
+
                 // GTK snaps a non-resizable window back to its child's natural
                 // size (the webview reports 200×200), silently overriding the
                 // 80×80 bubble-only size and stranding the bubble mid-window.
@@ -1307,7 +1475,11 @@ pub fn run() {
                     // click-through, which needs a realized GdkWindow.
                     set_window_opacity(&win, 0.0);
                     let _ = win.show();
-                    apply_input_rect(&win, None);
+                    apply_hit_shape(&win, None);
+                    // GTK drops the region on map and on every geometry change
+                    // (the UI sizes and places the window right after this), so
+                    // it has to be put back each time.
+                    watch_hit_shape(&handle, &win);
                 }
 
                 // Keep the bubble visible when the user switches Spaces on macOS.

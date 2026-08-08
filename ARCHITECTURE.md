@@ -244,11 +244,28 @@ back to *Auto*.
   exposed area is mapped before WebKit has painted it — and what forced the
   gravity-anchored resize (a plain move gets clamped by the WM near a screen
   edge, walking the bubble). Click-through comes from an input region instead:
-  `set_input_region` (lib.rs) shapes the window to the bubble's corner box while
-  the menu is closed and to the whole window while it is open, and to nothing
-  at all while the bubble is hidden. `linuxLayout()` in main.js therefore only
-  ever *moves* the window, and only when a flip changes which corner the bubble
-  sits in.
+  `set_input_region` (lib.rs) shapes the window to a circle around the blob
+  while the menu is closed and to the whole window while it is open (the empty
+  area around the ring is what closes it), and to nothing at all while the
+  bubble is hidden. `linuxLayout()` in main.js therefore only ever *moves* the
+  window, and only when a flip changes which corner the bubble sits in.
+
+  The region is set on the *GTK widget*, not on the GdkWindow: GTK remembers a
+  widget's region and re-applies it on realize and on every allocation, while
+  one pushed onto the GdkWindow is dropped by the next map or resize. That drop
+  was issue #6 — a bubble booted straight into the tray stayed invisible but
+  went on eating clicks in the middle of the screen, and only showing, moving
+  and re-hiding it (which re-applied the empty region with nothing left to
+  clear it) gave the clicks back. `watch_hit_shape` puts the region back on
+  `map` and on real geometry changes as a second line of defence.
+- **macOS and Windows have no input region**, so click-through there is a
+  cursor poll (`spawn_cursor_hit_test`, 50 ms): the desktop cursor position is
+  tested against the same shape and the whole window is flipped between
+  `set_ignore_cursor_events(true)` and `false` as the pointer enters and leaves
+  the blob. It has to poll — a window ignoring the cursor gets no mouse events
+  to react to — and anything unknown (no region yet, no cursor position) counts
+  as a hit, since a window taking clicks it shouldn't beats a bubble that can't
+  be clicked at all.
 - **Linux black flash on reveal**: a transparent undecorated window is on
   screen before WebKit has drawn anything, and what the compositor shows
   meanwhile is the webview's uninitialised backing store — a solid black

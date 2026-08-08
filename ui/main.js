@@ -367,27 +367,34 @@ function setRootSize(w, h) {
 /// `keepFlip` skips the flip recompute — used when shrinking back to
 /// bubble-only size, where re-flipping mid-close would mirror the layout while
 /// the window is still menu-sized and make the bubble jump corners.
-// Which part of the window takes clicks. On Linux the window is always
-// menu-sized, so while the menu is closed everything but the bubble's own
-// corner has to be punched through to the desktop.
+// Which part of the window takes clicks. The window is always bigger than what
+// is drawn in it — menu-sized for its whole life on Linux, and elsewhere an
+// 80px box around a 48px blob — so while the menu is closed only the blob
+// itself is clickable and the rest passes through to whatever is behind Spoke.
+// With the menu open the whole window takes clicks: the empty area around the
+// ring is what closes it again.
+const HIT_R = 26; // click radius around the bubble centre (the blob is 48px)
+
 async function applyInputRegion() {
-  if (!IS_LINUX) return;
   let f = 1;
   try { f = await appWindow.scaleFactor(); } catch (_) {}
-  const box =
-    menuState === "closed"
-      ? {
-          x: flipX ? 0 : MENU_W - BUBBLE_W,
-          y: flipY ? 0 : MENU_H - BUBBLE_H,
-          w: BUBBLE_W,
-          h: BUBBLE_H,
-        }
-      : { x: 0, y: 0, w: MENU_W, h: MENU_H };
+  // Linux keeps the window menu-sized at all times; everywhere else it shrinks
+  // back to the bubble when the menu closes.
+  const open = menuState !== "closed";
+  const winW = IS_LINUX || open ? MENU_W : BUBBLE_W;
+  const winH = IS_LINUX || open ? MENU_H : BUBBLE_H;
+  // Bubble centre: BUBBLE_HALF in from whichever corner the flips anchor it to.
+  const cx = flipX ? BUBBLE_HALF : winW - BUBBLE_HALF;
+  const cy = flipY ? BUBBLE_HALF : winH - BUBBLE_HALF;
+  const box = open
+    ? { x: 0, y: 0, w: winW, h: winH, r: 0 }
+    : { x: cx - HIT_R, y: cy - HIT_R, w: HIT_R * 2, h: HIT_R * 2, r: HIT_R };
   invoke("set_input_region", {
     x: Math.round(box.x * f),
     y: Math.round(box.y * f),
     w: Math.round(box.w * f),
     h: Math.round(box.h * f),
+    r: Math.round(box.r * f),
   }).catch(() => {});
 }
 
@@ -452,6 +459,7 @@ async function resizeAndReposition(w, h, initial = false, keepFlip = false) {
         w,
         h
       );
+      await applyInputRegion();
       return;
     }
     const factor = await appWindow.scaleFactor();
@@ -476,6 +484,7 @@ async function resizeAndReposition(w, h, initial = false, keepFlip = false) {
     const x = flipX ? bx - BUBBLE_HALF : bx + BUBBLE_HALF - w;
     const y = flipY ? by - BUBBLE_HALF : by + BUBBLE_HALF - h;
     await applyBounds(x, y, w, h);
+    await applyInputRegion();
   } catch (_) { /* best‑effort — some platforms may lack the API */ }
 }
 

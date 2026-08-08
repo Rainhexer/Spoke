@@ -15,3 +15,6 @@ Spoke-*.AppImage
 
 # Local tooling notes (not part of the release)
 CLAUDE.md
+
+# Local release notes (not part of the repo)
+RELEASE_NOTES.md
