@@ -207,13 +207,13 @@ on any distro, no install step.
 
 ### Installing
 
-- **Debian/Ubuntu:** `sudo apt install ./src-tauri/target/release/bundle/deb/Spoke_0.2.0_amd64.deb`
-- **Fedora/openSUSE:** `sudo rpm -i src-tauri/target/release/bundle/rpm/Spoke-0.2.0-1.x86_64.rpm`
-- **Any distro:** `chmod +x Spoke_0.2.0_amd64.AppImage && ./Spoke_0.2.0_amd64.AppImage`
+- **Debian/Ubuntu:** `sudo apt install ./src-tauri/target/release/bundle/deb/Spoke_0.4.0_amd64.deb`
+- **Fedora/openSUSE:** `sudo rpm -i src-tauri/target/release/bundle/rpm/Spoke-0.4.0-1.x86_64.rpm`
+- **Any distro:** `chmod +x Spoke_0.4.0_amd64.AppImage && ./Spoke_0.4.0_amd64.AppImage`
 - **Arch:** no native pacman target; use the AppImage, or install the deb's
   contents manually:
   ```sh
-  B=src-tauri/target/release/bundle/deb/Spoke_0.2.0_amd64/data
+  B=src-tauri/target/release/bundle/deb/Spoke_0.4.0_amd64/data
   sudo install -Dm755 $B/usr/bin/spoke /usr/local/bin/spoke
   sudo install -Dm644 $B/usr/share/applications/Spoke.desktop /usr/share/applications/Spoke.desktop
   for s in 32x32 128x128; do

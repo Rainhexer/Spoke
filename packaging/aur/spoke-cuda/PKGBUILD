@@ -5,7 +5,7 @@
 # always matches the host driver (this is why we ship no prebuilt CUDA binary).
 
 pkgname=spoke-cuda
-pkgver=0.2
+pkgver=0.4
 pkgrel=1
 pkgdesc="Push-to-talk voice dictation (whisper.cpp, NVIDIA CUDA acceleration)"
 arch=('x86_64')
