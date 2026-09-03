@@ -19,7 +19,7 @@
 # native package (.deb/.rpm) and guides you through the NVIDIA
 # driver/runtime deps with your own package manager. Where no native package
 # exists (Arch), it installs the prebuilt linux-cuda .deb plus NVIDIA's own
-# 12.6 userspace runtime as a sidecar -- still no build, no AUR.
+# 12.6 userspace runtime as a sidecar -- still no build from source.
 set -euo pipefail
 
 REPO="${SPOKE_REPO:-Rainhexer/Spoke}"
@@ -311,7 +311,7 @@ EOF
       # linux-cuda .deb plus NVIDIA's own 12.6 userspace runtime as a sidecar.
       # (The Ubuntu-built binary needs versioned libcudart/cuBLAS .so.12
       # symbols, which Arch's CUDA 13 system libs no longer satisfy.)
-      # No build, no AUR — about 300 MB download, needs sudo for /usr/local.
+      # No build from source — about 300 MB download, needs sudo for /usr/local.
       need_sudo
       if ! have nvidia-smi; then
         cat <<'EOF'
