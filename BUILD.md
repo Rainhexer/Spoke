@@ -68,6 +68,22 @@ tagged with its preset (e.g. `_linux-vulkan`, `_windows-cuda`). A manual run
 from the Actions tab
 builds everything without uploading, for testing the pipeline.
 
+### Portable binaries: GGML_NATIVE must stay OFF in CI
+
+whisper.cpp defaults to `GGML_NATIVE=ON` (`-march=native`), which bakes the
+build machine's newest CPU instructions into the binary. CI runners move to
+newer hardware over time (e.g. AVX512-capable hosts), so a release built that
+way dies with `SIGILL`/`ILL_ILLOPN` on older but common CPUs (seen on a Ryzen
+5 3600, which maxes out at AVX2). `release.yml` therefore exports
+`GGML_NATIVE=OFF` (+ the AVX2/FMA/F16C bundle, applied only to ggml's
+arch-specific kernels for CPUs from ~2013 on; AVX512 stays off) —
+`whisper-rs-sys` forwards any `GGML_*` env var to cmake. Do not remove those
+lines without providing another portability story. Local dev builds intentionally
+keep the default: compiled for your own CPU, fastest, and always compatible
+with the machine that built them. To reproduce release-equivalent portable
+binaries locally: `GGML_NATIVE=OFF GGML_AVX2=ON GGML_FMA=ON GGML_F16C=ON
+cargo tauri build --features <preset>`.
+
 ---
 
 ## Prerequisites (all platforms)

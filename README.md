@@ -12,6 +12,8 @@
 
  [![Download](https://img.shields.io/badge/Download-Latest_Release-4A90D9?style=for-the-badge)](https://github.com/Rainhexer/Spoke/releases/latest) [![Donate](https://img.shields.io/badge/Donate-Support_Spoke-FF6B6B?style=for-the-badge)](https://rainhexer.space/donate)
 
+> 📦 **[Install Spoke](INSTALL.md)** with one command · 🛠️ **[Build from source](BUILD.md)**
+
 **Talk instead of type.** Hold a hotkey, speak, release — your words appear wherever your cursor is. Any app, any text field, on **Linux**, **macOS** and **Windows**.
 
 ## How it works
@@ -24,7 +26,13 @@ Prefer tap-to-start / tap-to-stop? Switch to **Toggle** mode. Prefer the text on
 
 ## Get Spoke
 
-Pre-built binaries are available on the [Releases page](https://github.com/Rainhexer/Spoke/releases) — `.dmg` (macOS), `.deb`/`.rpm`/`.AppImage` (Linux), `.msi`/`.exe` (Windows).
+One-command install (Linux/macOS) — see [INSTALL.md](INSTALL.md):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Rainhexer/Spoke/main/install.sh | bash
+```
+
+Pre-built binaries are also available directly on the [Releases page](https://github.com/Rainhexer/Spoke/releases) — `.dmg` (macOS), `.deb`/`.rpm`/`.AppImage` (Linux), `.msi`/`.exe` (Windows).
 
 ### Build from source
 
@@ -107,6 +115,7 @@ Missing a permission? The bubble pulses yellow and category bubbles carry a **!*
 
 ## Documentation
 
+- **[INSTALL.md](INSTALL.md)** — installing with the install script
 - **[BUILD.md](BUILD.md)** — building and packaging for each platform
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how Spoke works inside
 - **[SPOKE.md](SPOKE.md)** — the original product specification

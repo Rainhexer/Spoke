@@ -22,6 +22,16 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Portable whisper.cpp: GGML_NATIVE=ON (the default) compiles -march=native,
+  # baking the CI runner's newest instructions (e.g. AVX512) into every binary
+  # — which then dies with SIGILL on older CPUs (see BUILD.md). OFF keeps the
+  # baseline portable; the AVX2 bundle below is applied only to ggml's
+  # arch-specific kernels and runs on any CPU from ~2013 on. AVX512 stays OFF.
+  # whisper-rs-sys forwards any GGML_* env var to cmake (see its build.rs).
+  GGML_NATIVE: OFF
+  GGML_AVX2: ON
+  GGML_FMA: ON
+  GGML_F16C: ON
 
 jobs:
   build:
