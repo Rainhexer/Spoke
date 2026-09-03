@@ -720,7 +720,8 @@ async fn run_pipeline(app: &AppHandle, state: &Arc<SpokeState>, session: u64) ->
         .map_err(|e| anyhow::anyhow!("clipboard task panicked: {e}"))??;
     }
     if dest.types() {
-        // enigo is not Send; run it on a blocking thread.
+        // Injection blocks: enigo is not Send on macOS/Windows, and the Linux
+        // paste path sleeps while the clipboard changes hands.
         tokio::task::spawn_blocking(move || inject::inject_text(&transcript))
             .await
             .map_err(|e| anyhow::anyhow!("inject task panicked: {e}"))??;

@@ -24,7 +24,8 @@ STT engine (one of two, chosen by config):
         ↓
 transcript: String
         ↓
-   ├─ enigo types it into the focused window   (output_dest = "type", default)
+   ├─ inserted into the focused window         (output_dest = "type", default)
+   │    typed on macOS/Windows; pasted on Linux, clipboard restored after
    ├─ copied to the clipboard                  (output_dest = "copy")
    └─ or both                                  (output_dest = "both")
 ```
@@ -44,7 +45,7 @@ download progress).
 | `config.rs` | `spoke.toml` schema, defaults, load/save |
 | `audio.rs` | cpal capture thread, mono downmix, resampling, silence stripping, WAV save |
 | `hotkey.rs` | `"ctrl+alt+space"` → global shortcut parsing |
-| `inject.rs` | enigo keyboard-simulation injection |
+| `inject.rs` | Insertion into the focused window: enigo keystrokes on macOS/Windows, `inject/paste.rs` on Linux |
 | `stt/mod.rs` | `SttEngine` enum — one interface over both backends |
 | `stt/whisper.rs` | whisper.cpp engine, model paths/URLs, CoreML bundle toggling |
 | `stt/google.rs` | Google STT v1 REST client |
@@ -161,7 +162,7 @@ back to *Auto*.
 | | macOS | Linux | Windows |
 |---|---|---|---|
 | Audio capture (cpal) | CoreAudio | ALSA (works with PipeWire/PulseAudio) | WASAPI |
-| Text injection (enigo) | CGEvent (needs Accessibility permission) | X11 / Wayland virtual keyboard | SendInput |
+| Text injection | enigo/CGEvent (needs Accessibility permission) | clipboard + synthetic Shift+Insert via XTEST (`inject/paste.rs`) | enigo/SendInput |
 | Global hotkey | Carbon event tap (via tauri plugin) | X11 grab / compositor protocol | RegisterHotKey |
 | Webview | WKWebView (built-in) | WebKitGTK | WebView2 |
 | Whisper acceleration | CoreML (Neural Engine), Metal (GPU) | CUDA, Vulkan | CUDA, Vulkan |

@@ -27,10 +27,8 @@ toml = "0.8"
 cpal = "0.15"
 hound = "3.5"
 
-# Text injection
-enigo = "0.2"
-
-# Clipboard access
+# Clipboard access — also carries the transcript on Linux, where injection is
+# a paste rather than synthesized keystrokes (see `inject::paste`).
 arboard = { version = "3", features = ["wayland-data-control"] }
 
 # Online STT (Google Cloud Speech-to-Text v1)
@@ -54,11 +52,18 @@ dirs = "5"
 # Offline STT — heavy native build (whisper.cpp + cmake). Opt in with `--features whisper`.
 whisper-rs = { version = "0.16", optional = true }
 
+# Text injection everywhere except Linux, which pastes instead
+# (see `inject::paste` for why enigo's Linux backends are unusable).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+enigo = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 # Direct GTK access for atomic window move+resize — already in the tree
 # transitively via tauri/tao, so this adds no new builds. Version must track
 # tao's gtk (0.18 for tauri 2).
-[target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# Text injection: one synthetic paste keystroke at the X server (inject::paste).
+x11rb = { version = "0.13", features = ["xtest"] }
 # Already in the tree transitively via tauri/wry. Direct dep so run() can
 # reach WebKitSettings and disable the damage-propagation feature (the
 # feature-list API itself is newer than the crate's bindings, so it is
